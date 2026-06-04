@@ -1,10 +1,31 @@
 <script lang="ts">
   import { toast } from 'svelte-sonner';
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+  import { marked } from 'marked';
+  import DOMPurify from 'dompurify';
+  import EmailBodyEditor from './EmailBodyEditor.svelte';
 
   let dialogEl: HTMLElement;
-  onMount(() => { if (dialogEl) document.body.appendChild(dialogEl); });
-  onDestroy(() => { if (dialogEl?.parentNode) dialogEl.parentNode.removeChild(dialogEl); });
+
+  function handleGlobalKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      if (previewState) {
+        closePreview();
+      } else if (!sending) {
+        handleCancel();
+      }
+    }
+  }
+
+  onMount(() => {
+    if (dialogEl) document.body.appendChild(dialogEl);
+    window.addEventListener('keydown', handleGlobalKeydown);
+  });
+
+  onDestroy(() => {
+    if (dialogEl?.parentNode) dialogEl.parentNode.removeChild(dialogEl);
+    window.removeEventListener('keydown', handleGlobalKeydown);
+  });
 
   const dispatch = createEventDispatcher<{ close: { status: 'sent' | 'cancelled' } }>();
 
@@ -34,9 +55,21 @@
   let to = [...draft.to];
   let cc = [...(draft.cc ?? [])];
   let subject = draft.subject;
-  let body = draft.body;
-  let signature = draft.signature;
   let attachments = [...(draft.attachments ?? [])];
+  let bodyEditor: EmailBodyEditor;
+  let signatureEl: HTMLElement;
+
+  // Convert Markdown body from AI to HTML for TipTap editor
+  const bodyHtml = DOMPurify.sanitize(marked.parse(draft.body) as string);
+  // Signature is already HTML — sanitize permissively to preserve complex tables/inline CSS
+  const signatureHtml = DOMPurify.sanitize(draft.signature, {
+    ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'td', 'th', 'img'],
+    ADD_ATTR: [
+      'width', 'height', 'cellpadding', 'cellspacing', 'border',
+      'bgcolor', 'align', 'valign', 'colspan', 'rowspan',
+      'style', 'src', 'href', 'target', 'alt'
+    ],
+  });
   let uploadedFiles: File[] = [];
 
   let toInput = '';
@@ -129,9 +162,17 @@
     sendError = '';
     try {
       const formData = new FormData();
+      const currentBodyHtml = bodyEditor?.getHtml() ?? bodyHtml;
+      const currentSignatureHtml = DOMPurify.sanitize(
+        signatureEl?.innerHTML ?? signatureHtml,
+        {
+          ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'td', 'th', 'img'],
+          ADD_ATTR: ['width', 'height', 'cellpadding', 'cellspacing', 'border', 'bgcolor', 'align', 'valign', 'colspan', 'rowspan', 'style', 'src', 'href', 'target', 'alt'],
+        }
+      );
       formData.append(
         'draft_json',
-        JSON.stringify({ to, cc, bcc: [], subject, body, signature, attachments })
+        JSON.stringify({ to, cc, bcc: [], subject, body: currentBodyHtml, signature: currentSignatureHtml, attachments })
       );
       uploadedFiles.forEach((f) => formData.append('files', f));
 
@@ -292,125 +333,132 @@
         />
       </div>
 
-      <!-- Body -->
+      <!-- Body — Rich Text Editor -->
       <div>
         <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Obsah zprávy</div>
-        <textarea
-          bind:value={body}
-          rows="8"
-          class="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-transparent outline-none focus:ring-2 focus:ring-blue-500 resize-y text-sm"
+        <EmailBodyEditor
+          bind:this={bodyEditor}
+          initialHtml={bodyHtml}
+          minHeight="120px"
         />
       </div>
 
-      <!-- Signature -->
-      <div>
-        <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Podpis</div>
-        <textarea
-          bind:value={signature}
-          rows="3"
-          class="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-transparent outline-none focus:ring-2 focus:ring-blue-500 resize-y font-mono text-sm"
-        />
-      </div>
+      <!-- Signature — contenteditable HTML (preserves complex email signature markup) -->
+      {#if signatureHtml}
+        <div>
+          <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Podpis</div>
+          <div
+            bind:this={signatureEl}
+            contenteditable="true"
+            class="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-transparent outline-none focus:ring-2 focus:ring-blue-500 overflow-x-auto overflow-y-auto"
+            style="max-height: 96px; min-height: 48px;"
+          >
+            {@html signatureHtml}
+          </div>
+        </div>
+      {/if}
 
-      <!-- Attachments -->
-      <div>
-        <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Přílohy</div>
-        <div class="flex flex-wrap gap-2 mb-3">
-          {#each attachments as att, i}
-            <span
-              class="inline-flex items-center gap-1 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-sm rounded-lg px-2.5 py-1.5"
+    </div>
+
+    <!-- Footer — attachments + actions always visible -->
+    <div class="border-t border-gray-200 dark:border-gray-700 px-6 pt-3 pb-4 flex flex-col gap-2 shrink-0">
+
+      <!-- Dropbox picker (expands above action row) -->
+      {#if showDropbox}
+        <div class="border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2">
+          <div class="flex gap-2 items-center">
+            <button
+              on:click={() => { showDropbox = false; dropboxQuery = ''; dropboxResults = []; }}
+              class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none shrink-0"
+              aria-label="Zavřít"
+            >×</button>
+            <input
+              bind:value={dropboxQuery}
+              placeholder="Hledat v Dropboxu..."
+              class="flex-1 text-sm border border-gray-200 dark:border-gray-700 rounded px-2 py-1 bg-transparent outline-none"
+              on:keydown={(e) => e.key === 'Enter' && searchDropbox()}
+            />
+            <button
+              on:click={searchDropbox}
+              disabled={dropboxSearching}
+              class="text-sm bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50 shrink-0"
             >
+              {dropboxSearching ? '...' : 'Hledat'}
+            </button>
+          </div>
+          {#each dropboxResults as file}
+            <button
+              on:click={() => addDropboxFile(file)}
+              class="w-full text-left text-xs py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+            >
+              📄 {file.name}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Attachment chips (only when there are attachments) -->
+      {#if attachments.length > 0}
+        <div class="flex flex-wrap gap-1.5">
+          {#each attachments as att, i}
+            <span class="inline-flex items-center gap-1 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-xs rounded px-2 py-1">
               <button
                 on:click={() => openPreview(att)}
-                class="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 transition max-w-[200px]"
+                class="flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 transition max-w-[160px]"
                 title="Zobrazit náhled"
               >
                 📎 <span class="truncate">{att.filename}</span>
-                <svg class="size-3.5 shrink-0 opacity-60" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3C5 3 1.73 7.11 1.05 9.64a1 1 0 0 0 0 .72C1.73 12.89 5 17 10 17s8.27-4.11 8.95-6.64a1 1 0 0 0 0-.72C18.27 7.11 15 3 10 3zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm0-6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
               </button>
-              <button on:click={() => removeAttachment(i)} class="hover:text-red-500 shrink-0 ml-0.5">×</button>
+              <button on:click={() => removeAttachment(i)} class="hover:text-red-500 shrink-0 ml-0.5 text-gray-400">×</button>
             </span>
           {/each}
         </div>
-        <div class="flex gap-2 flex-wrap">
-          <label class="cursor-pointer inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
-            + Ze zařízení
-            <input type="file" multiple class="hidden" on:change={handleFileInput} />
-          </label>
-          <button
-            on:click={() => (showDropbox = !showDropbox)}
-            class="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border transition
-              {showDropbox
-                ? 'border-blue-500 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
-                : 'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'}"
-          >
-            {showDropbox ? '▾' : '+'} Z Dropboxu
-          </button>
+      {/if}
+
+      <!-- Error -->
+      {#if sendError}
+        <div class="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+          <svg class="size-4 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-.75-10.5a.75.75 0 011.5 0v3.5a.75.75 0 01-1.5 0V7.5zm.75 6a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
+          <span class="flex-1">{sendError}</span>
+          <button on:click={() => (sendError = '')} class="text-red-400 hover:text-red-600 shrink-0 leading-none">×</button>
         </div>
+      {/if}
 
-        {#if showDropbox}
-          <div
-            class="mt-2 border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2"
-          >
-            <div class="flex gap-2 items-center">
-              <button
-                on:click={() => { showDropbox = false; dropboxQuery = ''; dropboxResults = []; }}
-                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none shrink-0"
-                aria-label="Zavřít"
-              >×</button>
-              <input
-                bind:value={dropboxQuery}
-                placeholder="Hledat v Dropboxu..."
-                class="flex-1 text-sm border border-gray-200 dark:border-gray-700 rounded px-2 py-1 bg-transparent outline-none"
-                on:keydown={(e) => e.key === 'Enter' && searchDropbox()}
-              />
-              <button
-                on:click={searchDropbox}
-                disabled={dropboxSearching}
-                class="text-sm bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50 shrink-0"
-              >
-                {dropboxSearching ? '...' : 'Hledat'}
-              </button>
-            </div>
-            {#each dropboxResults as file}
-              <button
-                on:click={() => addDropboxFile(file)}
-                class="w-full text-left text-xs py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-              >
-                📄 {file.name}
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    </div>
+      <!-- Action row: add-attachment buttons left, send/cancel right -->
+      <div class="flex items-center gap-2">
+        <span class="text-xs font-medium text-gray-500 dark:text-gray-400 shrink-0">Přílohy:</span>
+        <label class="cursor-pointer inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
+          📎 Ze zařízení
+          <input type="file" multiple class="hidden" on:change={handleFileInput} />
+        </label>
+        <button
+          on:click={() => (showDropbox = !showDropbox)}
+          class="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border transition
+            {showDropbox
+              ? 'border-blue-500 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+              : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+        >
+          📦 Z Dropboxu
+        </button>
 
-    <!-- Footer -->
-    {#if sendError}
-      <div class="flex items-start gap-2.5 mx-6 mb-0 mt-3 px-3 py-2.5 rounded-lg bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
-        <svg class="size-4 shrink-0 mt-0.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-.75-10.5a.75.75 0 011.5 0v3.5a.75.75 0 01-1.5 0V7.5zm.75 6a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/></svg>
-        <span class="flex-1">{sendError}</span>
-        <button on:click={() => (sendError = '')} class="text-red-400 hover:text-red-600 shrink-0 leading-none">×</button>
+        <div class="flex-1"></div>
+
+        <button
+          on:click={handleCancel}
+          disabled={sending}
+          class="text-sm px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+        >
+          Zrušit
+        </button>
+        <button
+          on:click={handleSend}
+          disabled={sending || !to.length}
+          class="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+        >
+          {#if sending}<span class="animate-spin inline-block">⟳</span>{/if}
+          Odeslat →
+        </button>
       </div>
-    {/if}
-    <div
-      class="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700"
-    >
-      <button
-        on:click={handleCancel}
-        disabled={sending}
-        class="text-sm px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-      >
-        Zrušit
-      </button>
-      <button
-        on:click={handleSend}
-        disabled={sending || !to.length}
-        class="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-      >
-        {#if sending}<span class="animate-spin inline-block">⟳</span>{/if}
-        Odeslat →
-      </button>
     </div>
   </div>
 
