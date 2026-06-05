@@ -9,12 +9,17 @@
 
   function handleGlobalKeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return;
+    // The dialog owns ESC for as long as it is mounted. Stop the event before
+    // any other listener (e.g. OWUI's chat-level ESC handler that aborts the
+    // in-flight MCP stream) can see it. Registered in capture phase below so
+    // we fire first regardless of registration order.
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
     // Stacked-overlay precedence: peel off the topmost open layer first.
     if (previewState) {
-      e.stopPropagation();
       closePreview();
     } else if (showDropbox) {
-      e.stopPropagation();
       showDropbox = false;
       dropboxQuery = '';
       dropboxResults = [];
@@ -25,12 +30,13 @@
 
   onMount(() => {
     if (dialogEl) document.body.appendChild(dialogEl);
-    window.addEventListener('keydown', handleGlobalKeydown);
+    // Capture phase so we beat any outer ESC handler (e.g. OWUI chat stream abort).
+    window.addEventListener('keydown', handleGlobalKeydown, true);
   });
 
   onDestroy(() => {
     if (dialogEl?.parentNode) dialogEl.parentNode.removeChild(dialogEl);
-    window.removeEventListener('keydown', handleGlobalKeydown);
+    window.removeEventListener('keydown', handleGlobalKeydown, true);
   });
 
   const dispatch = createEventDispatcher<{ close: { status: 'sent' | 'cancelled' } }>();
