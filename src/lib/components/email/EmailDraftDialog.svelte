@@ -1,6 +1,6 @@
 <script lang="ts">
   import { toast } from 'svelte-sonner';
-  import { createEventDispatcher, onMount, onDestroy } from 'svelte';
+  import { createEventDispatcher, onMount, onDestroy, tick } from 'svelte';
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
   import EmailBodyEditor from './EmailBodyEditor.svelte';
@@ -90,6 +90,22 @@
 
   function getExt(filename: string): string {
     return filename.split('.').pop()?.toLowerCase() ?? '';
+  }
+
+  // Brand-colored badge metadata per file type — used to render file-type icons
+  // in the Dropbox picker and the attachment chips.
+  function getFileMeta(name: string): { color: string; label: string } {
+    const ext = getExt(name);
+    if (ext === 'pdf') return { color: '#dc2626', label: 'PDF' };
+    if (['doc', 'docx', 'rtf', 'odt'].includes(ext)) return { color: '#2563eb', label: 'W' };
+    if (['xls', 'xlsx', 'csv', 'ods'].includes(ext)) return { color: '#16a34a', label: 'X' };
+    if (['ppt', 'pptx', 'odp'].includes(ext)) return { color: '#ea580c', label: 'P' };
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic', 'bmp', 'avif', 'tiff'].includes(ext))
+      return { color: '#9333ea', label: 'IMG' };
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return { color: '#ca8a04', label: 'ZIP' };
+    if (['txt', 'md', 'log'].includes(ext)) return { color: '#6b7280', label: 'TXT' };
+    if (['eml', 'msg'].includes(ext)) return { color: '#0891b2', label: 'EML' };
+    return { color: '#6b7280', label: ext.slice(0, 3).toUpperCase() };
   }
 
   function openPreview(att: typeof attachments[0]) {
@@ -229,8 +245,32 @@
   // Dropbox picker
   let showDropbox = false;
   let dropboxQuery = '';
-  let dropboxResults: Array<{ name: string; path_lower: string }> = [];
+  let dropboxQueryInput: HTMLInputElement;
+  type DropboxResult = {
+    name: string;
+    path_display: string;
+    path_lower: string;
+    folder_path: string;
+    modified: string;
+    open_url: string;
+  };
+  let dropboxResults: DropboxResult[] = [];
   let dropboxSearching = false;
+
+  async function toggleDropbox() {
+    showDropbox = !showDropbox;
+    if (showDropbox) {
+      await tick();
+      dropboxQueryInput?.focus();
+    }
+  }
+
+  function formatModified(iso: string): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString('cs-CZ', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
 
   async function searchDropbox() {
     if (!dropboxQuery.trim()) return;
@@ -238,10 +278,18 @@
     try {
       const resp = await fetch(`/api/dropbox-search?q=${encodeURIComponent(dropboxQuery)}`);
       const data = await resp.json();
-      dropboxResults = (data.results ?? []).map((r: any) => ({
-        name: r.name ?? r.filename ?? r.path?.split('/').pop() ?? 'file',
-        path_lower: r.path ?? r.path_lower ?? '',
-      }));
+      dropboxResults = (data.results ?? []).map((r: any): DropboxResult => {
+        const display = r.path_display ?? r.path ?? r.path_lower ?? '';
+        const folder = r.folder_path ?? display.split('/').slice(0, -1).join('/');
+        return {
+          name: r.name ?? r.filename ?? display.split('/').pop() ?? 'file',
+          path_display: display,
+          path_lower: r.path_lower ?? display,
+          folder_path: folder,
+          modified: r.server_modified ?? r.client_modified ?? '',
+          open_url: r.open_url ?? r.dropbox_url ?? '',
+        };
+      });
     } catch {
       toast.error('Chyba při hledání v Dropboxu');
     } finally {
@@ -249,8 +297,13 @@
     }
   }
 
-  function addDropboxFile(file: { name: string; path_lower: string }) {
-    attachments = [...attachments, { type: 'dropbox', filename: file.name, ref: file.path_lower }];
+  function addDropboxFile(file: DropboxResult) {
+    const ref = file.path_display || file.path_lower;
+    if (!ref) {
+      toast.error('Soubor z Dropboxu nemá platnou cestu');
+      return;
+    }
+    attachments = [...attachments, { type: 'dropbox', filename: file.name, ref }];
     showDropbox = false;
     dropboxQuery = '';
     dropboxResults = [];
@@ -393,6 +446,7 @@
               aria-label="Zavřít"
             >×</button>
             <input
+              bind:this={dropboxQueryInput}
               bind:value={dropboxQuery}
               placeholder="Hledat v Dropboxu..."
               class="flex-1 text-sm border border-gray-200 dark:border-gray-700 rounded px-2 py-1 bg-transparent outline-none"
@@ -406,14 +460,59 @@
               {dropboxSearching ? '...' : 'Hledat'}
             </button>
           </div>
+          {#if dropboxResults.length > 0}
+          <div class="max-h-56 overflow-y-auto -mx-1 px-1">
           {#each dropboxResults as file}
-            <button
-              on:click={() => addDropboxFile(file)}
-              class="w-full text-left text-xs py-1 px-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-            >
-              📄 {file.name}
-            </button>
+            {@const meta = getFileMeta(file.name)}
+            <div class="flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
+              <button
+                on:click={() => addDropboxFile(file)}
+                class="flex-1 min-w-0 text-left py-1.5 px-2"
+              >
+                <div class="text-xs flex items-center gap-1.5 text-gray-800 dark:text-gray-200">
+                  <svg class="shrink-0" width="14" height="17" viewBox="0 0 20 24" aria-hidden="true">
+                    <path d="M2 2a2 2 0 0 1 2-2h8l6 6v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2z" fill={meta.color}/>
+                    <path d="M12 0v6h6" fill="white" fill-opacity="0.35"/>
+                    {#if meta.label}
+                      <text x="10" y="17" text-anchor="middle" fill="white"
+                            font-family="Arial, sans-serif" font-weight="700"
+                            font-size={meta.label.length >= 3 ? 6 : 8.5}>{meta.label}</text>
+                    {/if}
+                  </svg>
+                  <span class="truncate flex-1 min-w-0" title={file.name}>{file.name}</span>
+                  {#if file.modified}
+                    <span
+                      class="shrink-0 text-[10px] text-gray-500 dark:text-gray-400 tabular-nums"
+                      title={file.modified}
+                    >{formatModified(file.modified)}</span>
+                  {/if}
+                </div>
+                {#if file.folder_path}
+                  <div
+                    class="text-[10px] text-gray-500 dark:text-gray-400 truncate pl-5"
+                    title={file.folder_path}
+                  >{file.folder_path}</div>
+                {/if}
+              </button>
+              {#if file.open_url}
+                <a
+                  href={file.open_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="shrink-0 p-1.5 mr-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 rounded"
+                  title="Otevřít v Dropboxu"
+                  aria-label="Otevřít v Dropboxu"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor" class="size-4">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </a>
+              {/if}
+            </div>
           {/each}
+          </div>
+          {/if}
         </div>
       {/if}
 
@@ -421,13 +520,23 @@
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-1.5">
           {#each attachments as att, i}
+            {@const attMeta = getFileMeta(att.filename)}
             <span class="inline-flex items-center gap-1 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-xs rounded px-2 py-1">
               <button
                 on:click={() => openPreview(att)}
-                class="flex items-center gap-1 hover:text-blue-600 dark:hover:text-blue-400 transition max-w-[160px]"
-                title="Zobrazit náhled"
+                class="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 transition max-w-[160px]"
+                title={att.filename}
               >
-                📎 <span class="truncate">{att.filename}</span>
+                <svg class="shrink-0" width="12" height="15" viewBox="0 0 20 24" aria-hidden="true">
+                  <path d="M2 2a2 2 0 0 1 2-2h8l6 6v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2z" fill={attMeta.color}/>
+                  <path d="M12 0v6h6" fill="white" fill-opacity="0.35"/>
+                  {#if attMeta.label}
+                    <text x="10" y="17" text-anchor="middle" fill="white"
+                          font-family="Arial, sans-serif" font-weight="700"
+                          font-size={attMeta.label.length >= 3 ? 6 : 8.5}>{attMeta.label}</text>
+                  {/if}
+                </svg>
+                <span class="truncate">{att.filename}</span>
               </button>
               <button on:click={() => removeAttachment(i)} class="hover:text-red-500 shrink-0 ml-0.5 text-gray-400">×</button>
             </span>
@@ -452,7 +561,7 @@
           <input type="file" multiple class="hidden" on:change={handleFileInput} />
         </label>
         <button
-          on:click={() => (showDropbox = !showDropbox)}
+          on:click={toggleDropbox}
           class="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border transition
             {showDropbox
               ? 'border-blue-500 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
