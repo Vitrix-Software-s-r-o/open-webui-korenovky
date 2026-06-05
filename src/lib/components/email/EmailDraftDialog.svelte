@@ -57,7 +57,7 @@
   let subject = draft.subject;
   let attachments = [...(draft.attachments ?? [])];
   let bodyEditor: EmailBodyEditor;
-  let signatureEl: HTMLElement;
+  let signatureFrame: HTMLIFrameElement;
 
   // Convert Markdown body from AI to HTML for TipTap editor
   const bodyHtml = DOMPurify.sanitize(marked.parse(draft.body) as string);
@@ -70,6 +70,15 @@
       'style', 'src', 'href', 'target', 'alt'
     ],
   });
+
+  // Wrap the signature in a minimal HTML doc so it renders inside an iframe
+  // fully isolated from the app's Tailwind/dark-mode CSS — only the
+  // signature's own inline styles apply, and the background is always white.
+  const signatureSrcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>
+    html, body { margin: 0; padding: 0; background: #ffffff; color: #1a1a1a; color-scheme: light; }
+    body { padding: 6px 8px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; line-height: 1.4; overflow: auto; }
+    body:focus { outline: none; }
+  </style></head><body contenteditable="true">${signatureHtml}</body></html>`;
   let uploadedFiles: File[] = [];
 
   let toInput = '';
@@ -154,6 +163,15 @@
   }
 
   async function handleSend() {
+    // Commit any uncommitted typed addresses (user may have typed without pressing Enter/comma)
+    if (toInput.trim()) {
+      to = addTag(to, toInput);
+      toInput = '';
+    }
+    if (ccInput.trim()) {
+      cc = addTag(cc, ccInput);
+      ccInput = '';
+    }
     if (!to.length) {
       toast.error('Zadejte alespoň jednoho příjemce');
       return;
@@ -163,8 +181,9 @@
     try {
       const formData = new FormData();
       const currentBodyHtml = bodyEditor?.getHtml() ?? bodyHtml;
+      const signatureRaw = signatureFrame?.contentDocument?.body?.innerHTML ?? signatureHtml;
       const currentSignatureHtml = DOMPurify.sanitize(
-        signatureEl?.innerHTML ?? signatureHtml,
+        signatureRaw,
         {
           ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'td', 'th', 'img'],
           ADD_ATTR: ['width', 'height', 'cellpadding', 'cellspacing', 'border', 'bgcolor', 'align', 'valign', 'colspan', 'rowspan', 'style', 'src', 'href', 'target', 'alt'],
@@ -343,18 +362,19 @@
         />
       </div>
 
-      <!-- Signature — contenteditable HTML (preserves complex email signature markup) -->
+      <!-- Signature — rendered inside an iframe so the parent's Tailwind/dark CSS
+           cannot leak in. The iframe body is contenteditable, always light-themed,
+           and only the signature's own inline styles apply. -->
       {#if signatureHtml}
         <div>
           <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Podpis</div>
-          <div
-            bind:this={signatureEl}
-            contenteditable="true"
-            class="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-transparent outline-none focus:ring-2 focus:ring-blue-500 overflow-x-auto overflow-y-auto"
-            style="max-height: 96px; min-height: 48px;"
-          >
-            {@html signatureHtml}
-          </div>
+          <iframe
+            bind:this={signatureFrame}
+            srcdoc={signatureSrcdoc}
+            title="Podpis"
+            class="w-full border border-gray-200 dark:border-gray-700 rounded-lg bg-white"
+            style="height: 120px; min-height: 48px; max-height: 160px; color-scheme: light;"
+          ></iframe>
         </div>
       {/if}
 
@@ -452,7 +472,7 @@
         </button>
         <button
           on:click={handleSend}
-          disabled={sending || !to.length}
+          disabled={sending || (!to.length && !toInput.trim())}
           class="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
         >
           {#if sending}<span class="animate-spin inline-block">⟳</span>{/if}
