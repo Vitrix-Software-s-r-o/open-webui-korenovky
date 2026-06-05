@@ -8,12 +8,18 @@
   let dialogEl: HTMLElement;
 
   function handleGlobalKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') {
-      if (previewState) {
-        closePreview();
-      } else if (!sending) {
-        handleCancel();
-      }
+    if (e.key !== 'Escape') return;
+    // Stacked-overlay precedence: peel off the topmost open layer first.
+    if (previewState) {
+      e.stopPropagation();
+      closePreview();
+    } else if (showDropbox) {
+      e.stopPropagation();
+      showDropbox = false;
+      dropboxQuery = '';
+      dropboxResults = [];
+    } else if (!sending) {
+      handleCancel();
     }
   }
 
