@@ -9,9 +9,14 @@
 	import { blur, fade } from 'svelte/transition';
 
 	import Suggestions from './Suggestions.svelte';
+	import InboxSuggestions from './InboxSuggestions.svelte';
+	import EmailInboxDialog from '$lib/components/email/EmailInboxDialog.svelte';
 	import { sanitizeResponseContent } from '$lib/utils';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
+
+	let inboxDialogOpen = false;
+	let inboxDialogInitialMid: string | null = null;
 
 	const i18n = getContext('i18n');
 
@@ -20,6 +25,7 @@
 	export let atSelectedModel;
 
 	export let onSelect = (e) => {};
+	export let setInputText: (text: string) => void = () => {};
 
 	let mounted = false;
 	let selectedModelIdx = 0;
@@ -133,6 +139,15 @@
 		</div>
 
 		<div class=" w-full font-primary" in:fade={{ duration: 200, delay: 300 }}>
+			<InboxSuggestions
+				{atSelectedModel}
+				effectiveModel={atSelectedModel ?? models[selectedModelIdx]}
+				selectedModelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? modelIds[selectedModelIdx] ?? ''}
+				on:open={(e) => {
+					inboxDialogInitialMid = e.detail?.messageId ?? null;
+					inboxDialogOpen = true;
+				}}
+			/>
 			<Suggestions
 				className="grid grid-cols-2"
 				suggestionPrompts={atSelectedModel?.info?.meta?.suggestion_prompts ??
@@ -144,3 +159,25 @@
 		</div>
 	</div>
 {/key}
+
+{#if inboxDialogOpen}
+	<EmailInboxDialog
+		modelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? modelIds[selectedModelIdx] ?? ''}
+		initialMessageId={inboxDialogInitialMid}
+		userSendAddress={$user?.email ?? ''}
+		onKoraiReply={(text) => {
+			// Type the /email mention straight into the current chat's input.
+			setInputText(text);
+		}}
+		on:close={() => {
+			inboxDialogOpen = false;
+			inboxDialogInitialMid = null;
+		}}
+	/>
+{/if}
+
+<style>
+	:global([data-testid='inbox-suggestions']) {
+		text-align: left;
+	}
+</style>

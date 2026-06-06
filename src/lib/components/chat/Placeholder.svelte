@@ -24,8 +24,13 @@
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import Suggestions from './Suggestions.svelte';
+	import InboxSuggestions from './InboxSuggestions.svelte';
+	import EmailInboxDialog from '$lib/components/email/EmailInboxDialog.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
+
+	let inboxDialogOpen = false;
+	let inboxDialogInitialMid: string | null = null;
 	import MessageInput from './MessageInput.svelte';
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import FolderTitle from './Placeholder/FolderTitle.svelte';
@@ -249,6 +254,15 @@
 	{:else}
 		<div class="mx-auto max-w-2xl font-primary mt-2" in:fade={{ duration: 200, delay: 200 }}>
 			<div class="mx-5">
+				<InboxSuggestions
+					{atSelectedModel}
+					effectiveModel={atSelectedModel ?? models[selectedModelIdx]}
+					selectedModelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? selectedModels[selectedModelIdx] ?? ''}
+					on:open={(e) => {
+						inboxDialogInitialMid = e.detail?.messageId ?? null;
+						inboxDialogOpen = true;
+					}}
+				/>
 				<Suggestions
 					suggestionPrompts={atSelectedModel?.info?.meta?.suggestion_prompts ??
 						models[selectedModelIdx]?.info?.meta?.suggestion_prompts ??
@@ -261,3 +275,18 @@
 		</div>
 	{/if}
 </div>
+
+{#if inboxDialogOpen}
+	<EmailInboxDialog
+		modelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? selectedModels[selectedModelIdx] ?? ''}
+		initialMessageId={inboxDialogInitialMid}
+		userSendAddress={$user?.email ?? ''}
+		onKoraiReply={(text) => {
+			messageInput?.setText(text);
+		}}
+		on:close={() => {
+			inboxDialogOpen = false;
+			inboxDialogInitialMid = null;
+		}}
+	/>
+{/if}
