@@ -140,6 +140,76 @@ async def email_live(
     )
 
 
+# --- IMAP folder list (for the folder selector in the Pošta dialog) ---
+
+
+@router.get("/folders")
+async def email_folders(
+    request: Request,
+    model_id: str = Query(...),
+    mailbox_id: str = Query(...),
+    user=Depends(get_verified_user),
+):
+    """List IMAP folders for a mailbox. Powers the folder Select in the
+    inbox-dialog filter strip."""
+    bearer = await _resolve_bearer(request, model_id)
+    return await _forward("GET", f"/folders/{mailbox_id}", bearer)
+
+
+# --- Index-backed search (used by the Pošta dialog when any structured
+# --- filter is active or the user types a non-trivial query) ---
+
+
+@router.get("/search")
+async def email_search(
+    request: Request,
+    model_id: str = Query(...),
+    mailbox_id: str = Query(...),
+    q: list[str] | None = Query(None),
+    folder: str | None = Query(None),
+    from_address: str | None = Query(None),
+    to_address: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    has_attachments: bool | None = Query(None),
+    unseen_only: bool = Query(False),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    sort_order: str = Query("desc"),
+    user=Depends(get_verified_user),
+):
+    """Proxy to email-mcp /search, scoped to the caller's single mailbox.
+
+    The upstream endpoint intersects ``mailbox_ids`` with the bearer's
+    allowed list and rejects with 403 when the requested mailbox is not
+    authorised — so the browser cannot reach other users' mail even if
+    it crafts ``mailbox_id`` by hand.
+    """
+    bearer = await _resolve_bearer(request, model_id)
+    params: dict[str, Any] = {
+        "mailbox_ids": [mailbox_id],
+        "limit": limit,
+        "offset": offset,
+        "sort_order": sort_order,
+        "unseen_only": str(unseen_only).lower(),
+    }
+    if q:
+        params["q"] = q
+    if folder:
+        params["folder"] = folder
+    if from_address:
+        params["from_address"] = from_address
+    if to_address:
+        params["to_address"] = to_address
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    if has_attachments is not None:
+        params["has_attachments"] = str(has_attachments).lower()
+    return await _forward("GET", "/search", bearer, params=params)
+
+
 # --- Single-email detail ---
 
 

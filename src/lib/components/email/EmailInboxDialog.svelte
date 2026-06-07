@@ -5,6 +5,7 @@
 	import DOMPurify from 'dompurify';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import EmailDraftDialog from './EmailDraftDialog.svelte';
+	import DateRangePicker from './DateRangePicker.svelte';
 	import type { EmailAttachment } from '$lib/utils/email';
 
 	const i18n: any = getContext('i18n');
@@ -31,6 +32,8 @@
 		flags: string[];
 		// Short, ~20-word summary served from /api/v1/email/live.
 		ai_summary_suggestion?: string;
+		// Body excerpt served from /api/v1/email/search.
+		body_preview?: string;
 		attachment_count?: number;
 	};
 
@@ -66,6 +69,23 @@
 	let detailLoading = false;
 	let searchQuery = '';
 	let attachmentFilter = false;
+	let unreadOnly = false;
+	let dateRange: { from: string | null; to: string | null } = { from: null, to: null };
+	let datePreset: string | null = null;
+	let folder = 'INBOX';
+	// IMAP names the "Sent" folder differently per provider; we detect it
+	// from /folders so the toggle works on Gmail, Seznam, Office365, etc.
+	let sentFolder: string | null = null;
+	let foldersLoaded = false;
+	let currentMailboxId: string | null = null;
+	// Hybrid: 'live' uses /inbox/live (cached IMAP snapshot, INBOX-only,
+	// client-side filtered); 'search' goes to ES via /api/v1/email/search.
+	let mode: 'live' | 'search' = 'live';
+	let searchOffset = 0;
+	let searchTotal = 0;
+	let searchLoadingMore = false;
+	let reloadTimer: any = null;
+	let fetchSeq = 0;
 	// Mobile collapse: when true, hide left list and show only detail.
 	let mobileShowingDetail = false;
 	// Draft mounting (for Reply / Reply All / Forward)
@@ -114,67 +134,267 @@
 
 	// --- Data fetching ---
 
+	// Public entry point. Resolves the mailbox on first call, then dispatches
+	// to the live or search loader based on `mode`.
 	async function loadList() {
-		// Resolve initial mailbox: prefer prop, else derive from the cards response.
-		let mb = initialMailboxId;
-		if (!mb) {
-			try {
-				const tok = localStorage.token;
-				const cards = await fetch(
-					`${WEBUI_API_BASE_URL}/email/cards?model_id=${encodeURIComponent(modelId)}&limit=1`,
-					{ headers: tok ? { Authorization: `Bearer ${tok}` } : {} }
-				).then((r) => r.json());
-				mb = cards?.rows?.[0]?.mailbox_id ?? null;
-			} catch {
-				mb = null;
+		if (!currentMailboxId) {
+			let mb = initialMailboxId;
+			if (!mb) {
+				try {
+					const tok = localStorage.token;
+					const cards = await fetch(
+						`${WEBUI_API_BASE_URL}/email/cards?model_id=${encodeURIComponent(modelId)}&limit=1`,
+						{ headers: tok ? { Authorization: `Bearer ${tok}` } : {} }
+					).then((r) => r.json());
+					mb = cards?.rows?.[0]?.mailbox_id ?? null;
+				} catch {
+					mb = null;
+				}
 			}
+			if (!mb) {
+				rows = [];
+				errored = true;
+				return;
+			}
+			currentMailboxId = mb;
+			// Kick the folder list off — non-blocking, used by the folder picker.
+			loadFolders();
 		}
-		if (!mb) {
-			rows = [];
-			errored = true;
-			return;
+		if (mode === 'search') {
+			await loadSearch(true);
+		} else {
+			await loadLive();
 		}
-		loading = true;
-		errored = false;
+	}
+
+	async function loadFolders() {
+		if (foldersLoaded || !currentMailboxId) return;
+		foldersLoaded = true;
 		try {
 			const tok = localStorage.token;
-			const url = `${WEBUI_API_BASE_URL}/email/live?model_id=${encodeURIComponent(modelId)}&mailbox_id=${encodeURIComponent(mb)}&folder=INBOX&limit=100`;
-			const resp = await fetch(url, {
-				headers: tok ? { Authorization: `Bearer ${tok}` } : {}
-			});
+			const url = `${WEBUI_API_BASE_URL}/email/folders?model_id=${encodeURIComponent(modelId)}&mailbox_id=${encodeURIComponent(currentMailboxId)}`;
+			const resp = await fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} });
+			if (!resp.ok) return;
+			const data = await resp.json();
+			const list = (data?.folders ?? []) as string[];
+			sentFolder = detectSentFolder(list);
+		} catch {
+			// non-fatal — Sent toggle just stays hidden
+		}
+	}
+
+	function detectSentFolder(list: string[]): string | null {
+		// Common IMAP names for the Sent folder, in priority order.
+		// Most servers expose one of these verbatim; Gmail uses
+		// "[Gmail]/Sent Mail"; Czech webmail occasionally uses
+		// "Odeslaná pošta".
+		const candidates = [
+			/^sent$/i,
+			/^sent items$/i,
+			/^sent messages$/i,
+			/^sent mail$/i,
+			/\[gmail\]\/sent mail$/i,
+			/^odeslan/i
+		];
+		for (const re of candidates) {
+			const hit = list.find((f) => re.test(f));
+			if (hit) return hit;
+		}
+		return null;
+	}
+
+	async function loadLive() {
+		if (!currentMailboxId) return;
+		loading = true;
+		errored = false;
+		const seq = ++fetchSeq;
+		try {
+			const tok = localStorage.token;
+			const url = `${WEBUI_API_BASE_URL}/email/live?model_id=${encodeURIComponent(modelId)}&mailbox_id=${encodeURIComponent(currentMailboxId)}&folder=INBOX&limit=100`;
+			const resp = await fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} });
+			if (seq !== fetchSeq) return; // stale
 			if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 			const data = await resp.json();
 			rows = (data?.rows ?? []) as Row[];
+			searchTotal = rows.length;
 			if (!selectedId && initialMessageId) {
 				const exists = rows.find((r) => r.message_id === initialMessageId);
 				if (exists) selectRow(initialMessageId);
 			}
-			// If we just rendered a cached snapshot, re-fetch shortly so
-			// the user sees fresh IMAP state (the server already kicked
-			// off a background refresh on the cache hit).
 			if (data?.from_cache) {
 				setTimeout(async () => {
+					if (mode !== 'live' || seq !== fetchSeq) return;
 					try {
-						const r2 = await fetch(url, {
-							headers: tok ? { Authorization: `Bearer ${tok}` } : {}
-						});
+						const r2 = await fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} });
 						if (r2.ok) {
 							const d2 = await r2.json();
-							rows = (d2?.rows ?? []) as Row[];
+							if (mode === 'live' && seq === fetchSeq) {
+								rows = (d2?.rows ?? []) as Row[];
+								searchTotal = rows.length;
+							}
 						}
 					} catch {}
 				}, 1500);
 			}
 		} catch {
-			errored = true;
-			rows = [];
+			if (seq === fetchSeq) {
+				errored = true;
+				rows = [];
+			}
 		} finally {
-			loading = false;
+			if (seq === fetchSeq) loading = false;
+		}
+	}
+
+	async function loadSearch(reset: boolean) {
+		if (!currentMailboxId) return;
+		if (reset) {
+			loading = true;
+			searchOffset = 0;
+		} else {
+			searchLoadingMore = true;
+		}
+		errored = false;
+		const seq = ++fetchSeq;
+		try {
+			const tok = localStorage.token;
+			const params = new URLSearchParams();
+			params.set('model_id', modelId);
+			params.set('mailbox_id', currentMailboxId);
+			params.set('limit', '50');
+			params.set('offset', String(searchOffset));
+			params.set('sort_order', 'desc');
+			if (folder) params.set('folder', folder);
+			const q = searchQuery.trim();
+			if (q.length >= 2) params.append('q', q);
+			if (dateRange.from) params.set('date_from', dateRange.from);
+			if (dateRange.to) params.set('date_to', dateRange.to);
+			if (attachmentFilter) params.set('has_attachments', 'true');
+			if (unreadOnly) params.set('unseen_only', 'true');
+
+			const resp = await fetch(`${WEBUI_API_BASE_URL}/email/search?${params.toString()}`, {
+				headers: tok ? { Authorization: `Bearer ${tok}` } : {}
+			});
+			if (seq !== fetchSeq) return;
+			if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+			const data = await resp.json();
+			const incoming = ((data?.results ?? []) as any[]).map(
+				(r): Row => ({
+					uid: r.uid ?? 0,
+					message_id: r.message_id,
+					folder: r.folder,
+					mailbox_id: r.mailbox_id,
+					subject: r.subject ?? '',
+					from_address: r.from_address ?? '',
+					to_addresses: r.to_addresses ?? [],
+					date: r.date ?? null,
+					flags: r.flags ?? [],
+					body_preview: r.body_preview ?? '',
+					attachment_count: r.attachment_count ?? 0
+				})
+			);
+			searchTotal = data?.total ?? incoming.length;
+			rows = reset ? incoming : [...rows, ...incoming];
+			searchOffset += incoming.length;
+		} catch {
+			if (seq === fetchSeq && reset) {
+				errored = true;
+				rows = [];
+			}
+		} finally {
+			if (seq === fetchSeq) {
+				loading = false;
+				searchLoadingMore = false;
+			}
+		}
+	}
+
+	function scheduleReload(immediate = false) {
+		if (reloadTimer) {
+			clearTimeout(reloadTimer);
+			reloadTimer = null;
+		}
+		const run = () => {
+			reloadTimer = null;
+			if (mode === 'live') loadLive();
+			else loadSearch(true);
+		};
+		if (immediate) run();
+		else reloadTimer = setTimeout(run, 300);
+	}
+
+	// Derive the mode from the active filter state. The live cached snapshot
+	// is preserved for the empty-filter "triage" case.
+	$: filterIsStructured = !!(
+		dateRange.from ||
+		(folder && folder !== 'INBOX') ||
+		unreadOnly ||
+		attachmentFilter
+	);
+	$: filterHasQuery = searchQuery.trim().length >= 2;
+	$: nextMode = filterIsStructured || filterHasQuery ? 'search' : 'live';
+	$: if (nextMode !== mode) {
+		mode = nextMode;
+		if (currentMailboxId) scheduleReload();
+	}
+
+	function onDateChange(e: CustomEvent<{ from: string | null; to: string | null; preset: string | null }>) {
+		dateRange = { from: e.detail.from, to: e.detail.to };
+		datePreset = e.detail.preset;
+		if (currentMailboxId) scheduleReload();
+	}
+
+	function setFolder(next: string) {
+		if (folder === next) return;
+		folder = next;
+		if (currentMailboxId) scheduleReload();
+	}
+
+	function onSearchInput() {
+		// `searchQuery` already bound; just kick a reload.
+		if (mode === 'search' && currentMailboxId) scheduleReload();
+	}
+
+	function clearSearch() {
+		if (!searchQuery) return;
+		searchQuery = '';
+		// If a structured filter is still active, mode stays in 'search' and the
+		// reactive mode-transition guard won't fire — kick the reload manually
+		// so the empty `q` propagates.
+		if (mode === 'search' && currentMailboxId) scheduleReload();
+	}
+
+	function toggleAttachmentFilter() {
+		attachmentFilter = !attachmentFilter;
+		if (currentMailboxId) scheduleReload();
+	}
+
+	function toggleUnreadOnly() {
+		unreadOnly = !unreadOnly;
+		if (currentMailboxId) scheduleReload();
+	}
+
+	function clearAllFilters() {
+		searchQuery = '';
+		attachmentFilter = false;
+		unreadOnly = false;
+		dateRange = { from: null, to: null };
+		datePreset = null;
+		folder = 'INBOX';
+		if (currentMailboxId) scheduleReload(true);
+	}
+
+	function loadMore() {
+		if (mode === 'search' && !searchLoadingMore && rows.length < searchTotal) {
+			loadSearch(false);
 		}
 	}
 
 	let lastFocusFetchAt = 0;
 	function onWindowFocus() {
+		// Only auto-refresh the cached snapshot — search results are stable and
+		// re-running a search on focus would reset pagination.
+		if (mode !== 'live') return;
 		const now = Date.now();
 		if (now - lastFocusFetchAt > 2000) {
 			lastFocusFetchAt = now;
@@ -249,8 +469,12 @@
 	$: isFlagged = detail ? (detail.flags || []).includes('Flagged') : false;
 
 	// --- Filtered + sorted view of rows ---
+	// In live mode we still client-filter for instant feedback while typing
+	// short queries (≤ 1 char). Search-mode results are already filtered by ES
+	// and we trust the server's date-desc ordering.
 
 	$: filteredRows = (() => {
+		if (mode === 'search') return rows;
 		const q = searchQuery.trim().toLowerCase();
 		const matched = rows.filter((r) => {
 			if (attachmentFilter && !(r.attachment_count && r.attachment_count > 0)) return false;
@@ -260,7 +484,6 @@
 				(r.from_address || '').toLowerCase().includes(q)
 			);
 		});
-		// Flagged pin to top, then newest UID first.
 		matched.sort((a, b) => {
 			const fa = (a.flags || []).includes('Flagged') ? 1 : 0;
 			const fb = (b.flags || []).includes('Flagged') ? 1 : 0;
@@ -269,6 +492,10 @@
 		});
 		return matched;
 	})();
+
+	// Render a small folder chip on rows when the result set spans multiple
+	// folders, so the user knows where each hit came from.
+	$: showFolderChips = mode === 'search' && new Set(rows.map((r) => r.folder)).size > 1;
 
 	// --- Reply / Reply All / Forward / KořAInek ---
 
@@ -457,15 +684,80 @@
 			<div
 				class="border-r border-gray-200 dark:border-gray-700 w-full sm:w-[360px] shrink-0 flex flex-col {mobileShowingDetail ? 'hidden sm:flex' : 'flex'}"
 			>
-				<!-- Search + attachment filter -->
-				<div class="p-2 border-b border-gray-100 dark:border-gray-800 shrink-0">
-					<input
-						type="text"
-						placeholder={$i18n.t('Hledat ve schránce…')}
-						class="w-full px-2 py-1 text-sm rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:border-gray-400"
-						bind:value={searchQuery}
-					/>
-					<div class="mt-1 flex items-center gap-2 text-xs">
+				<!-- Search + filter strip -->
+				<div class="p-2 border-b border-gray-100 dark:border-gray-800 shrink-0 space-y-1.5">
+					<div class="relative">
+						<input
+							type="text"
+							placeholder={$i18n.t('Hledat ve schránce…')}
+							class="w-full px-2 py-1 pr-7 text-sm rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 focus:outline-none focus:border-gray-400"
+							bind:value={searchQuery}
+							on:input={onSearchInput}
+						/>
+						{#if searchQuery}
+							<button
+								type="button"
+								class="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+								on:click={clearSearch}
+								aria-label={$i18n.t('Vymazat vyhledávání')}
+								title={$i18n.t('Vymazat vyhledávání')}
+							>
+								<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<line x1="6" y1="6" x2="18" y2="18" />
+									<line x1="6" y1="18" x2="18" y2="6" />
+								</svg>
+							</button>
+						{/if}
+					</div>
+
+					<DateRangePicker value={dateRange} preset={datePreset} on:change={onDateChange} />
+
+					<div class="flex items-center gap-2 text-xs flex-wrap">
+						<div class="inline-flex rounded-full border border-gray-200 dark:border-gray-700 overflow-hidden">
+							<button
+								type="button"
+								class="px-2 py-0.5 transition-colors"
+								class:bg-blue-50={folder === 'INBOX'}
+								class:text-blue-700={folder === 'INBOX'}
+								class:dark:bg-blue-900={folder === 'INBOX'}
+								class:dark:text-blue-200={folder === 'INBOX'}
+								class:text-gray-500={folder !== 'INBOX'}
+								class:dark:text-gray-400={folder !== 'INBOX'}
+								on:click={() => setFolder('INBOX')}
+							>
+								{$i18n.t('Doručené')}
+							</button>
+							<button
+								type="button"
+								class="px-2 py-0.5 transition-colors border-l border-gray-200 dark:border-gray-700 disabled:opacity-40 disabled:cursor-not-allowed"
+								class:bg-blue-50={sentFolder && folder === sentFolder}
+								class:text-blue-700={sentFolder && folder === sentFolder}
+								class:dark:bg-blue-900={sentFolder && folder === sentFolder}
+								class:dark:text-blue-200={sentFolder && folder === sentFolder}
+								class:text-gray-500={!sentFolder || folder !== sentFolder}
+								class:dark:text-gray-400={!sentFolder || folder !== sentFolder}
+								disabled={!sentFolder}
+								title={!sentFolder ? $i18n.t('Složka odeslaných není dostupná') : ''}
+								on:click={() => sentFolder && setFolder(sentFolder)}
+							>
+								{$i18n.t('Odeslané')}
+							</button>
+						</div>
+
+						<button
+							class="px-2 py-0.5 rounded-full border transition-colors"
+							class:border-blue-400={unreadOnly}
+							class:bg-blue-50={unreadOnly}
+							class:text-blue-700={unreadOnly}
+							class:dark:bg-blue-900={unreadOnly}
+							class:dark:text-blue-200={unreadOnly}
+							class:border-gray-200={!unreadOnly}
+							class:dark:border-gray-700={!unreadOnly}
+							on:click={toggleUnreadOnly}
+						>
+							{$i18n.t('Nepřečtené')}
+						</button>
+
 						<button
 							class="px-2 py-0.5 rounded-full border transition-colors"
 							class:border-blue-400={attachmentFilter}
@@ -475,11 +767,30 @@
 							class:dark:text-blue-200={attachmentFilter}
 							class:border-gray-200={!attachmentFilter}
 							class:dark:border-gray-700={!attachmentFilter}
-							on:click={() => (attachmentFilter = !attachmentFilter)}
+							on:click={toggleAttachmentFilter}
 						>
 							{$i18n.t('Má přílohu')}
 						</button>
+
+						{#if filterIsStructured || filterHasQuery}
+							<button
+								class="ml-auto text-[10px] text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 underline"
+								on:click={clearAllFilters}
+							>
+								{$i18n.t('Vymazat filtry')}
+							</button>
+						{/if}
 					</div>
+
+					{#if mode === 'search'}
+						<div class="text-[10px] text-gray-500 dark:text-gray-400">
+							{#if loading}
+								{$i18n.t('Hledání…')}
+							{:else}
+								{searchTotal} {$i18n.t('výsledků')}
+							{/if}
+						</div>
+					{/if}
 				</div>
 
 				<!-- Row list -->
@@ -499,9 +810,10 @@
 							{rows.length === 0 ? $i18n.t('Schránka je prázdná') : $i18n.t('Žádné zprávy neodpovídají filtru')}
 						</div>
 					{:else}
-						{#each filteredRows as r (`${r.folder}/${r.uid}`)}
+						{#each filteredRows as r (`${r.folder}/${r.uid}/${r.message_id}`)}
 							{@const unread = !(r.flags || []).includes('Seen')}
 							{@const flagged = (r.flags || []).includes('Flagged')}
+							{@const previewLine = r.ai_summary_suggestion || r.body_preview || ''}
 							<button
 								type="button"
 								class="block w-full text-left px-3 py-2 border-b border-gray-100 dark:border-gray-800 transition-colors"
@@ -518,6 +830,11 @@
 												<polygon points="12 2 15 8.5 22 9.3 17 14 18.2 21 12 17.8 5.8 21 7 14 2 9.3 9 8.5 12 2" />
 											</svg>
 										{/if}
+										{#if showFolderChips}
+											<span class="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 shrink-0">
+												{r.folder}
+											</span>
+										{/if}
 										<span class="text-xs truncate {unread ? 'font-semibold text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'}">
 											{senderName(r.from_address)}
 										</span>
@@ -527,13 +844,25 @@
 								<div class="text-xs truncate {unread ? 'font-semibold text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-300'}">
 									{r.subject || $i18n.t('(bez předmětu)')}
 								</div>
-								{#if r.ai_summary_suggestion}
+								{#if previewLine}
 									<div class="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-										{r.ai_summary_suggestion}
+										{previewLine}
 									</div>
 								{/if}
 							</button>
 						{/each}
+						{#if mode === 'search' && rows.length < searchTotal}
+							<div class="p-2">
+								<button
+									type="button"
+									class="w-full text-xs py-2 rounded border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+									disabled={searchLoadingMore}
+									on:click={loadMore}
+								>
+									{searchLoadingMore ? $i18n.t('Načítám…') : $i18n.t('Načíst další')}
+								</button>
+							</div>
+						{/if}
 					{/if}
 				</div>
 			</div>
