@@ -25,6 +25,7 @@
 
 	let rows: Card[] = [];
 	let totalUnread = 0;
+	let totalUnreadToday = 0;
 	let loaded = false;
 	let loading = false;
 	let errored = false;
@@ -95,11 +96,13 @@
 			const data = await resp.json();
 			rows = (data?.rows ?? []) as Card[];
 			totalUnread = data?.total_unread ?? rows.length;
+			totalUnreadToday = data?.total_unread_today ?? 0;
 			lastFetchAt = Date.now();
 		} catch (e) {
 			errored = true;
 			rows = [];
 			totalUnread = 0;
+			totalUnreadToday = 0;
 		} finally {
 			loading = false;
 			loaded = true;
@@ -165,6 +168,13 @@
 					{$i18n.t('Aktualizováno')}
 					{formatRelative(now - lastFetchAt)}
 				</span>
+			{/if}
+			{#if totalUnreadToday > 0}
+				<span
+					class="inline-flex items-center h-[1.05rem] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-[1.05rem] whitespace-nowrap"
+					aria-label={$i18n.t('{{n}} dnešních nepřečtených', { n: totalUnreadToday })}
+					title={$i18n.t('Dnešní pošta — {{n}} nepřečtených', { n: totalUnreadToday })}
+				>{totalUnreadToday} dnes</span>
 			{/if}
 			{#if totalUnread > rows.length}
 				<button

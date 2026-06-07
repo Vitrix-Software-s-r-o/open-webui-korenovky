@@ -29,7 +29,9 @@
 		selectedFolder,
 		WEBUI_NAME,
 		sidebarWidth,
-		activeChatIds
+		activeChatIds,
+		showEmailInboxDialog,
+		emailInboxDialogProps
 	} from '$lib/stores';
 	import { onMount, getContext, tick, onDestroy } from 'svelte';
 
@@ -66,6 +68,7 @@
 	import ChannelItem from './Sidebar/ChannelItem.svelte';
 	import PencilSquare from '../icons/PencilSquare.svelte';
 	import Search from '../icons/Search.svelte';
+	import Envelope from '../icons/Envelope.svelte';
 	import SearchModal from './SearchModal.svelte';
 	import FolderModal from './Sidebar/Folders/FolderModal.svelte';
 	import Sidebar from '../icons/Sidebar.svelte';
@@ -105,6 +108,54 @@
 	let newFolderId = null;
 
 	$: pinnedItems = $settings?.pinnedMenuItems ?? DEFAULT_PINNED_ITEMS;
+
+	// Email inbox sidebar button — find the first email-skill-enabled model
+	// the user has access to (mirrors InboxSuggestions' skill-gating).
+	$: anyEmailModel = ($models ?? []).find(
+		(m: any) => Array.isArray(m?.info?.meta?.skillIds) && m.info.meta.skillIds.includes('email')
+	);
+	let todayUnread = 0;
+	let todayUnreadTimer: any = null;
+
+	async function refreshTodayUnread() {
+		if (!anyEmailModel) {
+			todayUnread = 0;
+			return;
+		}
+		try {
+			const token = localStorage.token;
+			const resp = await fetch(
+				`${WEBUI_API_BASE_URL}/email/cards?model_id=${encodeURIComponent(anyEmailModel.id)}&limit=1`,
+				{ headers: token ? { Authorization: `Bearer ${token}` } : {} }
+			);
+			if (!resp.ok) return;
+			const data = await resp.json();
+			todayUnread = data?.total_unread_today ?? 0;
+		} catch {
+			/* keep last value on error */
+		}
+	}
+
+	function openEmailInbox() {
+		if (!anyEmailModel) return;
+		emailInboxDialogProps.set({
+			modelId: anyEmailModel.id,
+			initialMessageId: null,
+			initialMailboxId: null
+		});
+		showEmailInboxDialog.set(true);
+	}
+
+	// Refetch when the dialog closes — user likely just read something.
+	$: if (!$showEmailInboxDialog) refreshTodayUnread();
+
+	// $models may be empty when Sidebar first mounts; re-fetch as soon as an
+	// email-skill model becomes available.
+	let _lastEmailModelId = '';
+	$: if (anyEmailModel && anyEmailModel.id !== _lastEmailModelId) {
+		_lastEmailModelId = anyEmailModel.id;
+		refreshTodayUnread();
+	}
 
 	const isMenuItemVisible = (id) => {
 		switch (id) {
@@ -462,7 +513,9 @@
 		}
 	};
 
-	const onFocus = () => {};
+	const onFocus = () => {
+		refreshTodayUnread();
+	};
 
 	const onBlur = () => {
 		shiftKey = false;
@@ -598,6 +651,11 @@
 		const socketInstance = $socket;
 		socketInstance?.on('events', chatActiveEventHandler);
 
+		// Email inbox today-unread badge: initial fetch + 60 s heartbeat.
+		// Tab focus is already handled via the shared `onFocus` listener.
+		refreshTodayUnread();
+		todayUnreadTimer = setInterval(refreshTodayUnread, 60_000);
+
 		await tick();
 		initPinnedMenuSortable();
 
@@ -620,6 +678,8 @@
 			}
 
 			socketInstance?.off('events', chatActiveEventHandler);
+
+			if (todayUnreadTimer) clearInterval(todayUnreadTimer);
 		};
 	});
 
@@ -855,6 +915,33 @@
 						</button>
 					</Tooltip>
 				</div>
+
+				{#if anyEmailModel}
+					<div>
+						<Tooltip content={$i18n.t('Pošta')} placement="right">
+							<button
+								class=" cursor-pointer flex rounded-xl hover:bg-gray-100 dark:hover:bg-gray-850 transition group relative"
+								on:click={(e) => {
+									e.stopImmediatePropagation();
+									e.preventDefault();
+									openEmailInbox();
+								}}
+								draggable="false"
+								aria-label={$i18n.t('Pošta')}
+							>
+								<div class=" self-center flex items-center justify-center size-9">
+									<Envelope className="size-4.5" />
+								</div>
+								{#if todayUnread > 0}
+									<span
+										class="absolute -top-1 -right-2 h-[1.05rem] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-[1.05rem] whitespace-nowrap shadow-sm ring-1 ring-white dark:ring-gray-900"
+										aria-label={$i18n.t('{{n}} dnešních nepřečtených', { n: todayUnread })}
+									>{todayUnread} dnes</span>
+								{/if}
+							</button>
+						</Tooltip>
+					</div>
+				{/if}
 
 				{#each pinnedItems as itemId (itemId)}
 					{@const meta = getMenuItemMeta(itemId)}
@@ -1103,6 +1190,32 @@
 							<HotkeyHint name="search" className=" group-hover:visible invisible" />
 						</button>
 					</div>
+
+					{#if anyEmailModel}
+						<div class="px-[0.4375rem] flex justify-center text-gray-800 dark:text-gray-200">
+							<button
+								class="group grow flex items-center space-x-3 rounded-2xl px-2.5 py-2 hover:bg-gray-100 dark:hover:bg-gray-900 transition outline-none"
+								on:click={openEmailInbox}
+								draggable="false"
+								aria-label={$i18n.t('Pošta')}
+							>
+								<div class="self-center">
+									<Envelope strokeWidth="2" className="size-4.5" />
+								</div>
+
+								<div class="flex flex-1 self-center translate-y-[0.5px]">
+									<div class=" self-center text-sm font-primary">{$i18n.t('Pošta')}</div>
+								</div>
+
+								{#if todayUnread > 0}
+									<span
+										class="inline-flex items-center h-[1.05rem] px-1.5 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-[1.05rem] whitespace-nowrap"
+										aria-label={$i18n.t('{{n}} dnešních nepřečtených', { n: todayUnread })}
+									>{todayUnread} dnes</span>
+								{/if}
+							</button>
+						</div>
+					{/if}
 
 					<div id="pinned-menu-items-list">
 						{#each pinnedItems as itemId (itemId)}

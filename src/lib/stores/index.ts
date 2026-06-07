@@ -97,6 +97,18 @@ export const showShortcuts = writable(false);
 export const showArchivedChats = writable(false);
 export const showChangelog = writable(false);
 
+// Global email-inbox dialog: opened from the sidebar (and other site-wide
+// triggers). The chat-mounted EmailInboxDialog instances (Placeholder /
+// ChatPlaceholder / Chat) stay — they need an `attachEmail` callback into
+// the live MessageInput, which a global mount can't provide. The global
+// mount is read/triage only.
+export const showEmailInboxDialog = writable(false);
+export const emailInboxDialogProps = writable<{
+	modelId: string;
+	initialMessageId: string | null;
+	initialMailboxId: string | null;
+}>({ modelId: '', initialMessageId: null, initialMailboxId: null });
+
 export const showControls = writable(false);
 export const showEmbeds = writable(false);
 export const showOverview = writable(false);

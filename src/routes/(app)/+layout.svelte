@@ -38,12 +38,15 @@
 		showSearch,
 		showSidebar,
 		showControls,
-		mobile
+		mobile,
+		showEmailInboxDialog,
+		emailInboxDialogProps
 	} from '$lib/stores';
 
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import SettingsModal from '$lib/components/chat/SettingsModal.svelte';
 	import ChangelogModal from '$lib/components/ChangelogModal.svelte';
+	import EmailInboxDialog from '$lib/components/email/EmailInboxDialog.svelte';
 	import AccountPending from '$lib/components/layout/Overlay/AccountPending.svelte';
 	import UpdateInfoToast from '$lib/components/layout/UpdateInfoToast.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
@@ -378,6 +381,23 @@
 
 <SettingsModal bind:show={$showSettings} />
 <ChangelogModal bind:show={$showChangelog} />
+
+{#if $showEmailInboxDialog}
+	<EmailInboxDialog
+		modelId={$emailInboxDialogProps.modelId}
+		initialMessageId={$emailInboxDialogProps.initialMessageId}
+		initialMailboxId={$emailInboxDialogProps.initialMailboxId}
+		userSendAddress={$user?.email ?? ''}
+		onKoraiReply={() => {
+			// Global mount is read/triage only — no live MessageInput to
+			// attach the email badge to. Closing the dialog here is the
+			// right behavior; users who want to draft via the chat should
+			// open the inbox from inside a chat where MessageInput exists.
+			showEmailInboxDialog.set(false);
+		}}
+		on:close={() => showEmailInboxDialog.set(false)}
+	/>
+{/if}
 
 {#if version && compareVersion(version.latest, version.current) && ($settings?.showUpdateToast ?? true)}
 	<div class=" absolute bottom-8 right-8 z-50" in:fade={{ duration: 100 }}>
