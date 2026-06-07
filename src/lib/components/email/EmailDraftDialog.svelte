@@ -50,7 +50,7 @@
     subject: string;
     body: string;
     signature: string;
-    attachments: Array<{ type: string; filename: string; upload_index?: number; ref?: string; download_url?: string }>;
+    attachments: Array<{ type: string; filename: string; upload_index?: number; ref?: string; download_url?: string; open_url?: string }>;
   };
 
   let sending = false;
@@ -120,8 +120,34 @@
     return { color: '#6b7280', label: ext.slice(0, 3).toUpperCase() };
   }
 
-  function openPreview(att: typeof attachments[0]) {
+  function isPreviewableExt(ext: string): boolean {
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'pdf'].includes(ext);
+  }
+
+  function handleAttachmentClick(att: typeof attachments[0]) {
+    // Dropbox files — always open in Dropbox so the user gets the full
+    // Dropbox UI (versions, sharing, etc) instead of a barebones preview.
+    if (att.type === 'dropbox') {
+      if (att.open_url) {
+        window.open(att.open_url, '_blank', 'noopener,noreferrer');
+      } else {
+        toast.error('Soubor z Dropboxu nemá odkaz pro otevření');
+      }
+      return;
+    }
+
     const ext = getExt(att.filename);
+    // files-link (office_file) attachments that the browser can't preview
+    // (docx/xlsx/pptx/zip/…) — skip the empty preview modal and just hand the
+    // signed download URL to the browser; the Content-Disposition header
+    // already makes it a download.
+    if (att.type === 'office_file' && att.download_url && !isPreviewableExt(ext)) {
+      window.open(att.download_url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    // Otherwise — open the in-dialog preview (works for images/PDFs + local
+    // uploads via blob URL).
     const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext);
     const isPdf = ext === 'pdf';
     let url = '';
@@ -315,7 +341,10 @@
       toast.error('Soubor z Dropboxu nemá platnou cestu');
       return;
     }
-    attachments = [...attachments, { type: 'dropbox', filename: file.name, ref }];
+    attachments = [
+      ...attachments,
+      { type: 'dropbox', filename: file.name, ref, open_url: file.open_url }
+    ];
     showDropbox = false;
     dropboxQuery = '';
     dropboxResults = [];
@@ -535,7 +564,7 @@
             {@const attMeta = getFileMeta(att.filename)}
             <span class="inline-flex items-center gap-1 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-xs rounded px-2 py-1">
               <button
-                on:click={() => openPreview(att)}
+                on:click={() => handleAttachmentClick(att)}
                 class="flex items-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 transition max-w-[160px]"
                 title={att.filename}
               >
