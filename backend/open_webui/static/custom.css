@@ -83,9 +83,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.1) 0%, rgba(249,253,247,1) 100%),
-    url('/static/korenovky/bg-nature-main.jpg') center/cover no-repeat;
+  background: url('/static/korenovky/bg-nature-main.jpg') center/cover no-repeat;
   pointer-events: none;
 }
 

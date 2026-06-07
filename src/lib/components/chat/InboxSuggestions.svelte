@@ -227,12 +227,15 @@
 						style="animation-delay: {idx * 30}ms"
 						on:click={() => openDetail(r.message_id)}
 					>
-						<!-- Metadata header -->
+						<!-- Metadata header. Light-mode greys bumped two steps darker
+						     so sender + date stay readable over the translucent
+						     glass card on the nature backdrop; dark-mode greys are
+						     left as-is. -->
 						<div class="flex items-baseline justify-between gap-2">
-							<span class="text-xs text-gray-600 dark:text-gray-400 truncate">
+							<span class="text-xs text-gray-800 dark:text-gray-400 truncate">
 								{displaySender(r.from_address)}
 							</span>
-							<div class="flex items-center gap-1.5 text-[10px] text-gray-400 dark:text-gray-500 shrink-0">
+							<div class="flex items-center gap-1.5 text-[10px] text-gray-600 dark:text-gray-500 shrink-0">
 								{#if r.attachment_count > 0}
 									<span class="inline-flex items-center gap-0.5" title={$i18n.t('Přílohy: {{n}}', { n: r.attachment_count })}>
 										<svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -249,7 +252,7 @@
 						</div>
 						<!-- ~20-word AI summary, set apart from the metadata. -->
 						{#if summary}
-							<div class="mt-1 flex items-start gap-1.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">
+							<div class="mt-1 flex items-start gap-1.5 text-xs text-gray-900 dark:text-gray-400 line-clamp-2">
 								<span class="shrink-0 mt-[2px] inline-flex items-center justify-center text-[9px] font-semibold tracking-wide px-1 rounded bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">
 									AI
 								</span>

@@ -64,25 +64,15 @@
 	}
 </script>
 
-<div class="mb-1 flex gap-1 text-xs font-medium items-center text-gray-600 dark:text-gray-400">
-	{#if filteredPrompts.length > 0}
-		<Bolt />
-		{$i18n.t('Suggested')}
-	{:else}
-		<!-- Keine Vorschläge -->
-
-		<div
-			class="flex w-full {$settings?.landingPageMode === 'chat'
-				? ' -mt-1'
-				: 'text-center items-center justify-center'}  self-start text-gray-600 dark:text-gray-400"
-		>
-			{$WEBUI_NAME} ‧ v{WEBUI_VERSION}
+{#if filteredPrompts.length > 0}
+	<!-- Glass card — visual parity with InboxSuggestions ("Pošta") block. -->
+	<div
+		class="w-full font-primary mb-4 rounded-3xl border border-gray-100/40 dark:border-gray-800/40 bg-white/40 dark:bg-gray-500/5 backdrop-blur-sm px-4 py-3 shadow-sm"
+	>
+		<div class="mb-2 flex gap-2 text-xs font-medium items-center text-gray-600 dark:text-gray-400">
+			<Bolt />
+			<span>{$i18n.t('Suggested')}</span>
 		</div>
-	{/if}
-</div>
-
-<div class="h-40 w-full">
-	{#if filteredPrompts.length > 0}
 		<div role="list" class="max-h-40 overflow-auto scrollbar-none items-start {className}">
 			{#each filteredPrompts as prompt, idx (prompt.id || `${prompt.content}-${idx}`)}
 				<!-- svelte-ignore a11y-no-interactive-element-to-noninteractive-role -->
@@ -97,20 +87,20 @@
 					<div class="flex flex-col text-left">
 						{#if prompt.title && prompt.title[0] !== ''}
 							<div
-								class="font-medium dark:text-gray-300 dark:group-hover:text-gray-200 transition line-clamp-1"
+								class="font-medium text-gray-900 dark:text-gray-300 dark:group-hover:text-gray-200 transition line-clamp-1"
 							>
 								{prompt.title[0]}
 							</div>
-							<div class="text-xs text-gray-600 dark:text-gray-400 font-normal line-clamp-1">
+							<div class="text-xs text-gray-800 dark:text-gray-400 font-normal line-clamp-1">
 								{prompt.title[1]}
 							</div>
 						{:else}
 							<div
-								class="font-medium dark:text-gray-300 dark:group-hover:text-gray-200 transition line-clamp-1"
+								class="font-medium text-gray-900 dark:text-gray-300 dark:group-hover:text-gray-200 transition line-clamp-1"
 							>
 								{prompt.content}
 							</div>
-							<div class="text-xs text-gray-600 dark:text-gray-400 font-normal line-clamp-1">
+							<div class="text-xs text-gray-800 dark:text-gray-400 font-normal line-clamp-1">
 								{$i18n.t('Prompt')}
 							</div>
 						{/if}
@@ -118,8 +108,18 @@
 				</button>
 			{/each}
 		</div>
-	{/if}
-</div>
+	</div>
+{:else}
+	<div class="mb-1 flex gap-1 text-xs font-medium items-center text-gray-600 dark:text-gray-400">
+		<div
+			class="flex w-full {$settings?.landingPageMode === 'chat'
+				? ' -mt-1'
+				: 'text-center items-center justify-center'}  self-start text-gray-600 dark:text-gray-400"
+		>
+			{$WEBUI_NAME} ‧ v{WEBUI_VERSION}
+		</div>
+	</div>
+{/if}
 
 <style>
 	/* Waterfall animation for the suggestions */
