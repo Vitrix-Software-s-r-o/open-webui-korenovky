@@ -31,7 +31,8 @@
 		sidebarWidth,
 		activeChatIds,
 		showEmailInboxDialog,
-		emailInboxDialogProps
+		emailInboxDialogProps,
+		inboxRefreshTick
 	} from '$lib/stores';
 	import { onMount, getContext, tick, onDestroy } from 'svelte';
 
@@ -146,8 +147,16 @@
 		showEmailInboxDialog.set(true);
 	}
 
-	// Refetch when the dialog closes — user likely just read something.
-	$: if (!$showEmailInboxDialog) refreshTodayUnread();
+	// Stay in lockstep with the InboxSuggestions "dnes" badge: any
+	// EmailInboxDialog close (global / Chat / Placeholder mount) bumps
+	// the shared tick; both badges refetch /email/cards at the same
+	// moment so they don't drift. The initial tick === 0 doesn't fire a
+	// refetch (the model-id reactive block above handles the bootstrap).
+	let _lastInboxTick = 0;
+	$: if ($inboxRefreshTick !== _lastInboxTick) {
+		_lastInboxTick = $inboxRefreshTick;
+		refreshTodayUnread();
+	}
 
 	// $models may be empty when Sidebar first mounts; re-fetch as soon as an
 	// email-skill model becomes available.

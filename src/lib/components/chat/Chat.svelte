@@ -48,7 +48,8 @@
 		showFileNavPath,
 		showFileNavDir,
 		chatRequestQueues,
-		desktopEvent
+		desktopEvent,
+		bumpInboxRefresh
 	} from '$lib/stores';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
@@ -3302,6 +3303,9 @@
 			chatInboxDialogInitialMid = null;
 			chatInboxDialogInitialMailbox = null;
 			chatInboxDialogAttachMode = false;
+			// Keep the Sidebar + InboxSuggestions "dnes" badges in sync —
+			// the user may have just marked something read in the dialog.
+			bumpInboxRefresh();
 		}}
 	/>
 {/if}

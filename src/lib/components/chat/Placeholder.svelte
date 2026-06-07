@@ -18,7 +18,8 @@
 		temporaryChatEnabled,
 		selectedFolder,
 		chats,
-		currentChatPage
+		currentChatPage,
+		bumpInboxRefresh
 	} from '$lib/stores';
 	import { sanitizeResponseContent, extractCurlyBraceWords } from '$lib/utils';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
@@ -311,6 +312,9 @@
 			inboxDialogInitialMid = null;
 			inboxDialogInitialMailbox = null;
 			inboxDialogAttachMode = false;
+			// Keep the Sidebar + InboxSuggestions "dnes" badges in sync —
+			// the user may have just marked something read in the dialog.
+			bumpInboxRefresh();
 		}}
 	/>
 {/if}

@@ -109,6 +109,16 @@ export const emailInboxDialogProps = writable<{
 	initialMailboxId: string | null;
 }>({ modelId: '', initialMessageId: null, initialMailboxId: null });
 
+// Refresh signal for the "X dnes" unread-today badges in the Sidebar and
+// the InboxSuggestions panel. Bumping this triggers both badges to refetch
+// /email/cards in lockstep so they don't drift after a mark-as-read in the
+// dialog. Bumped on every EmailInboxDialog close (global mount + chat mount
+// + placeholder mount).
+export const inboxRefreshTick = writable(0);
+export function bumpInboxRefresh(): void {
+	inboxRefreshTick.update((n) => n + 1);
+}
+
 export const showControls = writable(false);
 export const showEmbeds = writable(false);
 export const showOverview = writable(false);

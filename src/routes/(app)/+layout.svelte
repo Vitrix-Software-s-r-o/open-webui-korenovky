@@ -40,7 +40,8 @@
 		showControls,
 		mobile,
 		showEmailInboxDialog,
-		emailInboxDialogProps
+		emailInboxDialogProps,
+		bumpInboxRefresh
 	} from '$lib/stores';
 
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
@@ -394,8 +395,12 @@
 			// right behavior; users who want to draft via the chat should
 			// open the inbox from inside a chat where MessageInput exists.
 			showEmailInboxDialog.set(false);
+			bumpInboxRefresh();
 		}}
-		on:close={() => showEmailInboxDialog.set(false)}
+		on:close={() => {
+			showEmailInboxDialog.set(false);
+			bumpInboxRefresh();
+		}}
 	/>
 {/if}
 

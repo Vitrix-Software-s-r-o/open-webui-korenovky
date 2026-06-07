@@ -2,6 +2,7 @@
 	import { onMount, onDestroy, getContext, createEventDispatcher } from 'svelte';
 	import { fade } from 'svelte/transition';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import { inboxRefreshTick } from '$lib/stores';
 
 	const i18n: any = getContext('i18n');
 	const dispatch = createEventDispatcher();
@@ -137,6 +138,15 @@
 	let lastModelId = '';
 	$: if (modelId && modelId !== lastModelId) {
 		lastModelId = modelId;
+		load();
+	}
+
+	// Re-load on the shared inbox refresh signal — fired whenever any
+	// EmailInboxDialog mount closes, so the cards + the Sidebar "dnes"
+	// badge refetch /email/cards in lockstep and stay in sync.
+	let _lastTick = 0;
+	$: if ($inboxRefreshTick !== _lastTick) {
+		_lastTick = $inboxRefreshTick;
 		load();
 	}
 

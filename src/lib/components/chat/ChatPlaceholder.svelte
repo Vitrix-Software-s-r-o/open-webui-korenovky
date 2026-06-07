@@ -3,7 +3,7 @@
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 
-	import { config, user, models as _models, temporaryChatEnabled } from '$lib/stores';
+	import { config, user, models as _models, temporaryChatEnabled, bumpInboxRefresh } from '$lib/stores';
 	import { onMount, getContext } from 'svelte';
 
 	import { blur, fade } from 'svelte/transition';
@@ -175,6 +175,9 @@
 		on:close={() => {
 			inboxDialogOpen = false;
 			inboxDialogInitialMid = null;
+			// Keep the Sidebar + InboxSuggestions "dnes" badges in sync —
+			// the user may have just marked something read in the dialog.
+			bumpInboxRefresh();
 		}}
 	/>
 {/if}
