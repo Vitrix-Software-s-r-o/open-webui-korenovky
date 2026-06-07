@@ -19,6 +19,11 @@
 	export let initialMailboxId: string | null = null;
 	// User's own send address, used to drop self from Reply-All cc list.
 	export let userSendAddress: string = '';
+	// When true, the right-pane action bar shows a single "Přidat k chatu"
+	// button instead of the reply cluster. The attach path reuses
+	// onReplyWithKorai() so badges arrive at the message-input via the
+	// existing onKoraiReply prop chain.
+	export let attachMode: boolean = false;
 
 	type Row = {
 		uid: number;
@@ -48,6 +53,10 @@
 		cc_addresses: string[];
 		date: string | null;
 		body_text: string;
+		// Short (~20-word) suggestion is what we render in the callout.
+		// The long ai_summary is index-only and intentionally NOT shown
+		// to keep the dialog consistent with cards / inbox suggestions.
+		ai_summary_suggestion?: string;
 		ai_summary?: string;
 		attachments?: Array<{
 			filename: string;
@@ -218,8 +227,11 @@
 			rows = (data?.rows ?? []) as Row[];
 			searchTotal = rows.length;
 			if (!selectedId && initialMessageId) {
-				const exists = rows.find((r) => r.message_id === initialMessageId);
-				if (exists) selectRow(initialMessageId);
+				// Don't gate on the row existing in the live INBOX list — a
+				// message from another folder or older than the live window
+				// (e.g. clicked from an attached badge) is fetched by id
+				// from ES in selectRow() and shown in the detail pane.
+				selectRow(initialMessageId);
 			}
 			if (data?.from_cache) {
 				setTimeout(async () => {
@@ -670,6 +682,22 @@
 			.filter((line) => !METADATA_KEY_RE.test(line));
 		return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 	}
+
+	// Fallback when ai_summary_suggestion isn't populated yet (older
+	// docs indexed before the field existed). Mirrors the backend's
+	// _fallback_short_summary in email-mcp/app/main.py: strip metadata
+	// lines, take the first sentence, cap at 160 chars.
+	function shortSummary(detail: Detail | null): string {
+		if (!detail) return '';
+		const suggestion = (detail.ai_summary_suggestion || '').trim();
+		if (suggestion) return suggestion;
+		const cleaned = cleanAiSummary(detail.ai_summary || '');
+		if (!cleaned) return '';
+		const m = /^([\s\S]+?[.!?])(\s|$)/.exec(cleaned);
+		let out = (m ? m[1] : cleaned).trim().replace(/\n/g, ' ');
+		if (out.length > 160) out = out.slice(0, 157).trimEnd() + '…';
+		return out;
+	}
 </script>
 
 <div
@@ -905,20 +933,33 @@
 				{:else if detail}
 					<!-- Action bar (top) -->
 					<div class="border-b border-gray-100 dark:border-gray-800 px-4 py-2 shrink-0 flex flex-wrap gap-2 items-center">
-						<button class="text-sm px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white" on:click={onReply}>
-							{$i18n.t('Odpovědět')}
-						</button>
-						{#if (detail.to_addresses?.length || 0) + (detail.cc_addresses?.length || 0) > 1}
-							<button class="text-sm px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800" on:click={onReplyAll}>
-								{$i18n.t('Odpovědět všem')}
+						{#if attachMode}
+							<button
+								class="text-sm px-4 py-1.5 rounded bg-sky-600 hover:bg-sky-700 text-white inline-flex items-center gap-1.5"
+								on:click={onReplyWithKorai}
+							>
+								<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<line x1="12" y1="5" x2="12" y2="19" />
+									<line x1="5" y1="12" x2="19" y2="12" />
+								</svg>
+								{$i18n.t('Přidat k chatu')}
+							</button>
+						{:else}
+							<button class="text-sm px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white" on:click={onReply}>
+								{$i18n.t('Odpovědět')}
+							</button>
+							{#if (detail.to_addresses?.length || 0) + (detail.cc_addresses?.length || 0) > 1}
+								<button class="text-sm px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800" on:click={onReplyAll}>
+									{$i18n.t('Odpovědět všem')}
+								</button>
+							{/if}
+							<button class="text-sm px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800" on:click={onForward}>
+								{$i18n.t('Přeposlat')}
+							</button>
+							<button class="text-sm px-3 py-1.5 rounded border border-purple-300 dark:border-purple-600 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30" on:click={onReplyWithKorai}>
+								{$i18n.t('Odpovědět s KořAInkem')}
 							</button>
 						{/if}
-						<button class="text-sm px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800" on:click={onForward}>
-							{$i18n.t('Přeposlat')}
-						</button>
-						<button class="text-sm px-3 py-1.5 rounded border border-purple-300 dark:border-purple-600 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30" on:click={onReplyWithKorai}>
-							{$i18n.t('Odpovědět s KořAInkem')}
-						</button>
 						<span class="flex-1" />
 						<button
 							class="text-amber-500 hover:text-amber-600"
@@ -966,7 +1007,7 @@
 						{/if}
 					</div>
 
-					{#if cleanAiSummary(detail.ai_summary || '')}
+					{#if shortSummary(detail)}
 						<!-- AI summary callout, visually distinct from metadata + body -->
 						<div class="mx-4 mt-3 mb-2 px-3 py-2 rounded-md border-l-2 border-purple-400 bg-purple-50/60 dark:bg-purple-900/15">
 							<div class="flex items-center gap-1.5 mb-1">
@@ -977,8 +1018,8 @@
 									{$i18n.t('Shrnutí')}
 								</span>
 							</div>
-							<div class="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-								{cleanAiSummary(detail.ai_summary || '')}
+							<div class="text-xs text-gray-700 dark:text-gray-300 leading-relaxed">
+								{shortSummary(detail)}
 							</div>
 						</div>
 					{/if}

@@ -130,6 +130,10 @@
 	let chatInboxDialogOpen = false;
 	let chatInboxDialogInitialMid: string | null = null;
 	let chatInboxDialogInitialMailbox: string | null = null;
+	// When set, the dialog opens in attach mode (single "Přidat k chatu"
+	// button instead of the reply cluster). Triggered by the envelope-plus
+	// toolbar button in MessageInput.
+	let chatInboxDialogAttachMode = false;
 	const openEmailFromBadge = (messageId: string, mailboxId?: string | null) => {
 		if (!messageId) return;
 		chatInboxDialogInitialMid = messageId;
@@ -3185,6 +3189,22 @@
 											submitHandler(e.detail);
 										}
 									}}
+									on:openInboxAttach={() => {
+										chatInboxDialogInitialMid = null;
+										chatInboxDialogInitialMailbox = null;
+										chatInboxDialogAttachMode = true;
+										chatInboxDialogOpen = true;
+									}}
+									on:openInboxBadge={(e) => {
+										// Reopen the dialog focused on the attached message so
+										// the user can re-read it or trigger "Odpovědět s
+										// KořAInkem". Not attach mode — the email is already
+										// in the input, full action bar is what's useful here.
+										chatInboxDialogInitialMid = e.detail?.messageId ?? null;
+										chatInboxDialogInitialMailbox = e.detail?.mailboxId ?? null;
+										chatInboxDialogAttachMode = false;
+										chatInboxDialogOpen = true;
+									}}
 								/>
 
 								<div
@@ -3273,6 +3293,7 @@
 		initialMessageId={chatInboxDialogInitialMid}
 		initialMailboxId={chatInboxDialogInitialMailbox}
 		userSendAddress={$user?.email ?? ''}
+		attachMode={chatInboxDialogAttachMode}
 		onKoraiReply={(email) => {
 			messageInput?.attachEmail(email);
 		}}
@@ -3280,6 +3301,7 @@
 			chatInboxDialogOpen = false;
 			chatInboxDialogInitialMid = null;
 			chatInboxDialogInitialMailbox = null;
+			chatInboxDialogAttachMode = false;
 		}}
 	/>
 {/if}

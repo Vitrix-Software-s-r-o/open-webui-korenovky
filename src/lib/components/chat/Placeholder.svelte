@@ -31,6 +31,11 @@
 
 	let inboxDialogOpen = false;
 	let inboxDialogInitialMid: string | null = null;
+	let inboxDialogInitialMailbox: string | null = null;
+	// Attach-mode opens the dialog with a single "Přidat k chatu" primary
+	// button instead of the reply cluster. Triggered by the envelope-plus
+	// toolbar button in MessageInput.
+	let inboxDialogAttachMode = false;
 	import MessageInput from './MessageInput.svelte';
 	import FolderPlaceholder from './Placeholder/FolderPlaceholder.svelte';
 	import FolderTitle from './Placeholder/FolderTitle.svelte';
@@ -239,6 +244,21 @@
 					on:submit={(e) => {
 						dispatch('submit', e.detail);
 					}}
+					on:openInboxAttach={() => {
+						inboxDialogInitialMid = null;
+						inboxDialogAttachMode = true;
+						inboxDialogOpen = true;
+					}}
+					on:openInboxBadge={(e) => {
+						// Reopen the dialog focused on the attached message so the
+						// user can re-read it or trigger "Odpovědět s KořAInkem".
+						// Not attach mode — the email is already in the input,
+						// the full action bar is what's useful here.
+						inboxDialogInitialMid = e.detail?.messageId ?? null;
+						inboxDialogInitialMailbox = e.detail?.mailboxId ?? null;
+						inboxDialogAttachMode = false;
+						inboxDialogOpen = true;
+					}}
 				/>
 			</div>
 		</div>
@@ -280,13 +300,17 @@
 	<EmailInboxDialog
 		modelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? selectedModels[selectedModelIdx] ?? ''}
 		initialMessageId={inboxDialogInitialMid}
+		initialMailboxId={inboxDialogInitialMailbox}
 		userSendAddress={$user?.email ?? ''}
+		attachMode={inboxDialogAttachMode}
 		onKoraiReply={(email) => {
 			messageInput?.attachEmail(email);
 		}}
 		on:close={() => {
 			inboxDialogOpen = false;
 			inboxDialogInitialMid = null;
+			inboxDialogInitialMailbox = null;
+			inboxDialogAttachMode = false;
 		}}
 	/>
 {/if}

@@ -80,6 +80,8 @@
 
 	import XMark from '../icons/XMark.svelte';
 	import GlobeAlt from '../icons/GlobeAlt.svelte';
+	import EnvelopePlus from '../icons/EnvelopePlus.svelte';
+	import { isEmailFileEntry } from '$lib/utils/email';
 	import Photo from '../icons/Photo.svelte';
 	import Wrench from '../icons/Wrench.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
@@ -532,6 +534,23 @@
 			webSearchCapableModels.length &&
 		$config?.features?.enable_web_search &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.web_search);
+
+	// Show the envelope-plus toolbar button only when every selected model
+	// has the `email` skill (mirrors InboxSuggestions + sidebar Pošta gating).
+	let showEmailAttachButton = false;
+	$: showEmailAttachButton = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).every(
+		(id) => {
+			const m = $models.find((mm) => mm.id === id);
+			return Array.isArray(m?.info?.meta?.skillIds) && m.info.meta.skillIds.includes('email');
+		}
+	);
+
+	// Derived flag — drives the sky highlight on the new toolbar button
+	// whenever any email is currently attached to the message input,
+	// regardless of whether it came from the new button, "Odpovědět s
+	// KořAInkem", or a future programmatic attach.
+	let emailAttachmentActive = false;
+	$: emailAttachmentActive = (files ?? []).some(isEmailFileEntry);
 
 	let showImageGenerationButton = false;
 	$: showImageGenerationButton =
@@ -1343,6 +1362,11 @@
 											<EmailBadge
 												email={file.email}
 												dismissible={true}
+												on:click={(e) =>
+													dispatch('openInboxBadge', {
+														messageId: e.detail?.message_id ?? file.email?.message_id ?? null,
+														mailboxId: e.detail?.mailbox_id ?? file.email?.mailbox_id ?? null
+													})}
 												on:dismiss={() => {
 													files.splice(fileIdx, 1);
 													files = files;
@@ -1856,6 +1880,22 @@
 															<XMark className="size-4" strokeWidth="1.75" />
 														</div>
 													{/if}
+												</button>
+											</Tooltip>
+										{/if}
+
+										{#if showEmailAttachButton}
+											<Tooltip content={$i18n.t('Připojit e-mail')} placement="top">
+												<button
+													aria-label={$i18n.t('Připojit e-mail')}
+													aria-pressed={emailAttachmentActive}
+													on:click|preventDefault={() => dispatch('openInboxAttach')}
+													type="button"
+													class="group p-[7px] flex gap-1.5 items-center text-sm rounded-full transition-colors duration-300 focus:outline-hidden max-w-full overflow-hidden {emailAttachmentActive
+														? ' text-sky-500 dark:text-sky-300 bg-sky-50 hover:bg-sky-100 dark:bg-sky-400/10 dark:hover:bg-sky-600/10 border border-sky-200/40 dark:border-sky-500/20'
+														: 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 '}"
+												>
+													<EnvelopePlus className="size-4" strokeWidth="1.75" />
 												</button>
 											</Tooltip>
 										{/if}
