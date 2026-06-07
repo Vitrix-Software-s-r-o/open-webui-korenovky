@@ -237,6 +237,44 @@ async def email_detail(
     return await _forward("GET", f"/email/{message_id}", bearer, params=params or None)
 
 
+# --- Attachment download link (per-user proxy to email-mcp link mint) ---
+
+
+@router.get("/attachment_link")
+async def email_attachment_link(
+    request: Request,
+    model_id: str = Query(...),
+    message_id: str = Query(...),
+    attachment_index: int = Query(0, ge=0),
+    mailbox_id: str | None = Query(None),
+    folder: str | None = Query(None),
+    uid: int | None = Query(None),
+    user=Depends(get_verified_user),
+):
+    """Mint a 24h HMAC-signed download URL for one email attachment.
+
+    The browser receives only the ``url`` — the upstream Bearer that
+    authorises the mint stays server-side. The URL itself is a
+    capability token, so the user can ``window.open()`` it directly to
+    trigger the download via the public ``/attachments/{token}`` route.
+    """
+    bearer = await _resolve_bearer(request, model_id)
+    from urllib.parse import quote
+    params: dict[str, Any] = {}
+    if mailbox_id:
+        params["mailbox_id"] = mailbox_id
+    if folder:
+        params["folder"] = folder
+    if uid is not None:
+        params["uid"] = uid
+    return await _forward(
+        "GET",
+        f"/email/{quote(message_id, safe='')}/attachments/{attachment_index}/link",
+        bearer,
+        params=params or None,
+    )
+
+
 # --- Draft preparation (mint a draft_id; UI mounts EmailDraftDialog with it) ---
 
 

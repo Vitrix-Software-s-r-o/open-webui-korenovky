@@ -602,11 +602,32 @@
 		if (!detail) return;
 		try {
 			const tok = localStorage.token;
-			// Reuse the existing email-mcp signed URL endpoint via the chat-side
-			// tool? Simpler: call email-mcp directly via the proxy.
-			// (No proxy route yet for attachment link — call via the MCP tool layer
-			// is also an option. For v1 we mint here on demand.)
-			toast.message($i18n.t('Stahování přílohy…'));
+			const params = new URLSearchParams({
+				model_id: modelId,
+				message_id: detail.message_id,
+				attachment_index: String(idx),
+				mailbox_id: detail.mailbox_id,
+				folder: detail.folder,
+				uid: String(detail.uid),
+			});
+			const resp = await fetch(
+				`${WEBUI_API_BASE_URL}/email/attachment_link?${params.toString()}`,
+				{ headers: tok ? { Authorization: `Bearer ${tok}` } : {} }
+			);
+			if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+			const data = await resp.json();
+			const url: string | undefined = data?.url;
+			if (!url) throw new Error('missing url');
+			// Force a download navigation in a hidden anchor: links from
+			// email-mcp carry Content-Disposition: attachment, so the
+			// browser saves rather than navigates away.
+			const a = document.createElement('a');
+			a.href = url;
+			a.rel = 'noopener';
+			a.target = '_blank';
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
 		} catch {
 			toast.error($i18n.t('Stažení selhalo'));
 		}
