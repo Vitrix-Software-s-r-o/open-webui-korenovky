@@ -181,7 +181,7 @@
 					class="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 font-normal ml-1"
 					on:click={openOverflow}
 				>
-					{$i18n.t('Zobrazit vše ({{n}} dalších)', { n: totalUnread - rows.length })} →
+					{$i18n.t('Zobrazit vše')} →
 				</button>
 			{/if}
 			<span class="flex-1" />
