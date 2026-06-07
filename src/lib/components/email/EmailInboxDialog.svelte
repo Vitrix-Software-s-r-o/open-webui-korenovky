@@ -5,11 +5,12 @@
 	import DOMPurify from 'dompurify';
 	import { WEBUI_API_BASE_URL } from '$lib/constants';
 	import EmailDraftDialog from './EmailDraftDialog.svelte';
+	import type { EmailAttachment } from '$lib/utils/email';
 
 	const i18n: any = getContext('i18n');
 	const dispatch = createEventDispatcher<{ close: void }>();
 
-	export let onKoraiReply: (text: string) => void = () => {};
+	export let onKoraiReply: (email: EmailAttachment) => void = () => {};
 
 	export let modelId: string;
 	// Initial message to focus (set by InboxSuggestions clicks); may be null for the overflow path.
@@ -352,19 +353,19 @@
 
 	function onReplyWithKorai() {
 		if (!detail) return;
-		// The leading `<$email|Email>` mention is what Chat.svelte parses to
-		// activate the email skill on submit (skill_ids gets populated).
-		const mention =
-			`<$email|Email>\n` +
-			`from: ${detail.from_address}\n` +
-			`to: ${(detail.to_addresses || []).join(', ')}\n` +
-			`subject: ${detail.subject}\n` +
-			`date: ${detail.date ?? ''}\n` +
-			`message_id: ${detail.message_id}\n\n` +
-			(detail.body_text || '');
-		// Bubble up to the placeholder — it owns the message input and
-		// types the text in place, no navigation required.
-		onKoraiReply(mention);
+		// Hand back a structured email payload — the caller attaches it as
+		// a badge in the message input; Chat.svelte folds it back into a
+		// `<$email|Email>` mention block at send time (see utils/email.ts).
+		const email: EmailAttachment = {
+			from: detail.from_address,
+			to: detail.to_addresses || [],
+			subject: detail.subject,
+			date: detail.date ?? null,
+			message_id: detail.message_id,
+			mailbox_id: detail.mailbox_id,
+			body: detail.body_text || ''
+		};
+		onKoraiReply(email);
 		dispatch('close');
 	}
 

@@ -73,6 +73,8 @@
 	import RichTextInput from '../common/RichTextInput.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import FileItem from '../common/FileItem.svelte';
+	import EmailBadge from '../email/EmailBadge.svelte';
+	import type { EmailAttachment } from '$lib/utils/email';
 	import Image from '../common/Image.svelte';
 	import Spinner from '../common/Spinner.svelte';
 
@@ -354,6 +356,22 @@
 			await tick();
 			if (cb) await cb(text);
 		}
+	};
+
+	export const attachEmail = (email: EmailAttachment) => {
+		// Attach an email as a badge in the pending-files row. Chat.svelte
+		// folds it back into a <$email|Email> mention block in the outgoing
+		// user_message payload at send time (see Chat.svelte:sendMessageSocket).
+		files = [
+			...files,
+			{
+				id: uuidv4(),
+				type: 'email',
+				name: email.subject || '(no subject)',
+				email
+			}
+		];
+		chatInputElement?.focus();
 	};
 
 	const getCommand = () => {
@@ -1321,7 +1339,16 @@
 									dir={$settings?.chatDirection ?? 'auto'}
 								>
 									{#each files as file, fileIdx}
-										{#if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
+										{#if file.type === 'email'}
+											<EmailBadge
+												email={file.email}
+												dismissible={true}
+												on:dismiss={() => {
+													files.splice(fileIdx, 1);
+													files = files;
+												}}
+											/>
+										{:else if file.type === 'image' || (file?.content_type ?? '').startsWith('image/')}
 											{@const fileUrl =
 												file.url.startsWith('data') || file.url.startsWith('http')
 													? file.url

@@ -14,6 +14,7 @@
 	import { sanitizeResponseContent } from '$lib/utils';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
+	import type { EmailAttachment } from '$lib/utils/email';
 
 	let inboxDialogOpen = false;
 	let inboxDialogInitialMid: string | null = null;
@@ -26,6 +27,7 @@
 
 	export let onSelect = (e) => {};
 	export let setInputText: (text: string) => void = () => {};
+	export let attachEmail: (email: EmailAttachment) => void = () => {};
 
 	let mounted = false;
 	let selectedModelIdx = 0;
@@ -165,9 +167,10 @@
 		modelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? modelIds[selectedModelIdx] ?? ''}
 		initialMessageId={inboxDialogInitialMid}
 		userSendAddress={$user?.email ?? ''}
-		onKoraiReply={(text) => {
-			// Type the /email mention straight into the current chat's input.
-			setInputText(text);
+		onKoraiReply={(email) => {
+			// Attach the email as a badge — Chat.svelte folds it back into a
+			// <$email|Email> block at send time.
+			attachEmail(email);
 		}}
 		on:close={() => {
 			inboxDialogOpen = false;

@@ -281,8 +281,8 @@
 		modelId={atSelectedModel?.id ?? models[selectedModelIdx]?.id ?? selectedModels[selectedModelIdx] ?? ''}
 		initialMessageId={inboxDialogInitialMid}
 		userSendAddress={$user?.email ?? ''}
-		onKoraiReply={(text) => {
-			messageInput?.setText(text);
+		onKoraiReply={(email) => {
+			messageInput?.attachEmail(email);
 		}}
 		on:close={() => {
 			inboxDialogOpen = false;

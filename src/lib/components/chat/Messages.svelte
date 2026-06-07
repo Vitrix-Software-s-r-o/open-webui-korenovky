@@ -37,6 +37,8 @@
 	let messages = [];
 
 	export let setInputText: Function = () => {};
+	export let attachEmail: (email: any) => void = () => {};
+	export let openEmail: (messageId: string, mailboxId?: string | null) => void = () => {};
 
 	export let sendMessage: Function;
 	export let continueResponse: Function;
@@ -479,7 +481,13 @@
 
 <div class={className}>
 	{#if Object.keys(history?.messages ?? {}).length == 0}
-		<ChatPlaceholder modelIds={selectedModels} {atSelectedModel} {onSelect} {setInputText} />
+		<ChatPlaceholder
+			modelIds={selectedModels}
+			{atSelectedModel}
+			{onSelect}
+			{setInputText}
+			{attachEmail}
+		/>
 	{:else}
 		<div class="w-full pt-2">
 			{#key chatId}
@@ -510,6 +518,7 @@
 								idx={messageIdx}
 								{user}
 								{setInputText}
+								{openEmail}
 								{gotoMessage}
 								{showPreviousMessage}
 								{showNextMessage}

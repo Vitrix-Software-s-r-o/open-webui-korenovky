@@ -104,6 +104,7 @@
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import DeleteConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Placeholder from './Placeholder.svelte';
+	import EmailInboxDialog from '$lib/components/email/EmailInboxDialog.svelte';
 	import FilesOverlay from './MessageInput/FilesOverlay.svelte';
 	import NotificationToast from '../NotificationToast.svelte';
 	import Spinner from '../common/Spinner.svelte';
@@ -122,6 +123,19 @@
 
 	let messageInput: MessageInput | undefined;
 	let messagesRef: Messages | undefined;
+
+	// Re-opening an email-badge from within an existing chat: the inbox dialog
+	// is owned at this level because Messages.svelte may have no placeholder
+	// (which hosts its own copy) mounted once the conversation has started.
+	let chatInboxDialogOpen = false;
+	let chatInboxDialogInitialMid: string | null = null;
+	let chatInboxDialogInitialMailbox: string | null = null;
+	const openEmailFromBadge = (messageId: string, mailboxId?: string | null) => {
+		if (!messageId) return;
+		chatInboxDialogInitialMid = messageId;
+		chatInboxDialogInitialMailbox = mailboxId ?? null;
+		chatInboxDialogOpen = true;
+	};
 
 	let autoScroll = true;
 	let isNearTop = true;
@@ -3075,6 +3089,12 @@
 										setInputText={(text) => {
 											messageInput?.setText(text);
 										}}
+										attachEmail={(email) => {
+											messageInput?.attachEmail(email);
+										}}
+										openEmail={(messageId, mailboxId) => {
+											openEmailFromBadge(messageId, mailboxId);
+										}}
 										{selectedModels}
 										{atSelectedModel}
 										{sendMessage}
@@ -3246,6 +3266,23 @@
 		</div>
 	{/if}
 </div>
+
+{#if chatInboxDialogOpen}
+	<EmailInboxDialog
+		modelId={selectedModelIds?.at(0) ?? selectedModels?.at(0) ?? ''}
+		initialMessageId={chatInboxDialogInitialMid}
+		initialMailboxId={chatInboxDialogInitialMailbox}
+		userSendAddress={$user?.email ?? ''}
+		onKoraiReply={(email) => {
+			messageInput?.attachEmail(email);
+		}}
+		on:close={() => {
+			chatInboxDialogOpen = false;
+			chatInboxDialogInitialMid = null;
+			chatInboxDialogInitialMailbox = null;
+		}}
+	/>
+{/if}
 
 <style>
 	::-webkit-scrollbar {

@@ -2236,6 +2236,50 @@ def extract_skill_ids_from_messages(messages: list[dict]) -> set[str]:
     return ids
 
 
+def _format_email_mention(email: dict) -> str:
+    """Render an email-badge attachment as the legacy `<$email|Email>` block."""
+    to_list = email.get('to') or []
+    if isinstance(to_list, str):
+        to_list = [to_list]
+    return (
+        '<$email|Email>\n'
+        f'from: {email.get("from", "")}\n'
+        f'to: {", ".join(to_list)}\n'
+        f'subject: {email.get("subject", "")}\n'
+        f'date: {email.get("date") or ""}\n'
+        f'message_id: {email.get("message_id", "")}\n\n'
+        f'{email.get("body", "") or ""}'
+    )
+
+
+def inject_email_files_into_messages(messages: list[dict]) -> None:
+    """
+    Fold `message.files[].type == 'email'` entries back into the user message
+    content as `<$email|Email>` mention blocks. Mirrors the image-files
+    injection pattern: the UI keeps emails as compact badges (clean storage),
+    while the LLM sees the full email body via the legacy skill-mention format
+    that `email.md` is built around. Called before skill extraction so the
+    mention triggers `email` skill activation and is later stripped by
+    `strip_skill_mentions`.
+    """
+    for message in messages:
+        if message.get('role') != 'user':
+            continue
+        email_files = [f for f in (message.get('files') or []) if f.get('type') == 'email' and f.get('email')]
+        if not email_files:
+            continue
+        block = '\n\n'.join(_format_email_mention(f['email']) for f in email_files) + '\n\n'
+        content = message.get('content')
+        if isinstance(content, list):
+            # Multimodal: prepend a text part.
+            message['content'] = [{'type': 'text', 'text': block}, *content]
+        else:
+            message['content'] = f'{block}{content or ""}'
+        # Drop the email entries from files so they don't leak elsewhere
+        # (they're metadata, not retrievable documents).
+        message['files'] = [f for f in (message.get('files') or []) if f.get('type') != 'email']
+
+
 def strip_skill_mentions(messages: list[dict]) -> None:
     """Strip <$skillId|label> mention tags from message content in-place."""
     strip_re = re.compile(r'<\$[^>]+>')
@@ -2311,6 +2355,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
             system_message = get_system_message(form_data.get('messages', []))
             form_data['messages'] = [system_message, *db_messages] if system_message else db_messages
+
+            # Email-badge fold-in — must run before the loop below strips `files`.
+            # Persisted-chat branch only: the temp-chat / form-data branch hits the
+            # unconditional injection call near the skill-extraction step.
+            inject_email_files_into_messages(form_data['messages'])
 
             # Inject image files into content as image_url parts (mirrors frontend logic)
             for message in form_data['messages']:
@@ -2557,6 +2606,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # If the original caller provided tools, use them as-is (skip resolution).
     # Otherwise, save any tools that filter inlets added for merging later.
     inlet_filter_tools = None if payload_tools else form_data.get('tools', None)
+
+    # Email-badge fold-in: inline `<$email|Email>` mention blocks from
+    # `message.files[].type == 'email'` entries before skill extraction below
+    # picks them up. Keeps DB storage clean (badges stay as `files`) while the
+    # LLM still receives the full email body that the `email` skill expects.
+    inject_email_files_into_messages(form_data.get('messages', []))
 
     # Skills — extract IDs from message content (<$skillId|label> tags) so
     # persisted chats work without relying on the frontend to send skill_ids.
