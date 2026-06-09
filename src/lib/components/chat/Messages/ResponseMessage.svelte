@@ -2,8 +2,8 @@
 	import { toast } from 'svelte-sonner';
 	import dayjs from 'dayjs';
 
-	import { createEventDispatcher, onDestroy } from 'svelte';
-	import { onMount, tick, getContext } from 'svelte';
+	import { createEventDispatcher, onDestroy, onMount } from 'svelte';
+	import { tick, getContext } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType, t } from 'i18next';
 
@@ -175,6 +175,20 @@
 		(model?.info?.meta?.capabilities?.status_updates ?? true) &&
 		statusEntries.length > 0 &&
 		!(statusEntries.at(-1)?.hidden ?? false);
+
+	let elapsedSeconds = 0;
+	let elapsedTimer: any = null;
+
+	onMount(() => {
+		if (!message.done) {
+			elapsedTimer = setInterval(() => { elapsedSeconds += 1; }, 1000);
+		}
+	});
+
+	$: if (message.done && elapsedTimer) {
+		clearInterval(elapsedTimer);
+		elapsedTimer = null;
+	}
 
 	let edit = false;
 	let editedContent = '';
@@ -633,6 +647,8 @@
 	});
 
 	onDestroy(() => {
+		if (elapsedTimer) clearInterval(elapsedTimer);
+
 		if (buttonsContainerElement) {
 			buttonsContainerElement.removeEventListener('wheel', buttonsWheelHandler);
 		}
@@ -827,7 +843,13 @@
 							id="response-content-container"
 						>
 							{#if message.content === '' && !message.done && !message.error && !hasVisibleStatus}
-								<Skeleton />
+								<div class="flex items-center gap-1.5">
+									<span class="relative flex size-3 shrink-0">
+										<span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
+										<span class="relative inline-flex size-3 rounded-full bg-green-500"></span>
+									</span>
+									<span class="text-gray-600 dark:text-gray-300 working-pulse">{$i18n.t('Pracuji...')}{elapsedSeconds > 0 ? ` ${elapsedSeconds} s` : ''}</span>
+								</div>
 							{:else if message.content && message.error !== true}
 								<!-- always show message contents even if there's an error -->
 								<!-- unless message.error === true which is legacy error handling, where the error message is stored in message.content -->
@@ -885,6 +907,16 @@
 
 							{#if message.code_executions}
 								<CodeExecutions codeExecutions={message.code_executions} />
+							{/if}
+
+							{#if !message.done && !message.error && (message.content !== '' || hasVisibleStatus)}
+								<div class="flex items-center gap-1.5 mt-2">
+									<span class="relative flex size-3 shrink-0">
+										<span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
+										<span class="relative inline-flex size-3 rounded-full bg-green-500"></span>
+									</span>
+									<span class="text-gray-600 dark:text-gray-300 working-pulse">{$i18n.t('Pracuji...')}{elapsedSeconds > 0 ? ` ${elapsedSeconds} s` : ''}</span>
+								</div>
 							{/if}
 						</div>
 					</div>
@@ -1528,5 +1560,19 @@
 	.buttons {
 		-ms-overflow-style: none; /* IE and Edge */
 		scrollbar-width: none; /* Firefox */
+	}
+
+	@keyframes working-pulse {
+		0%, 100% { color: var(--wp-from); }
+		50%       { color: var(--wp-to); }
+	}
+	.working-pulse {
+		--wp-from: rgb(75, 85, 99);
+		--wp-to:   rgb(22, 163, 74);
+		animation: working-pulse 2s ease-in-out infinite;
+	}
+	:global(.dark) .working-pulse {
+		--wp-from: rgb(209, 213, 219);
+		--wp-to:   rgb(74, 222, 128);
 	}
 </style>

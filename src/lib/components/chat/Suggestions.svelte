@@ -67,7 +67,7 @@
 {#if filteredPrompts.length > 0}
 	<!-- Glass card — visual parity with InboxSuggestions ("Pošta") block. -->
 	<div
-		class="w-full font-primary mb-4 rounded-3xl border border-gray-100/40 dark:border-gray-800/40 bg-white/40 dark:bg-gray-500/5 backdrop-blur-sm px-4 py-3 shadow-sm"
+		class="w-full font-primary mb-4 rounded-3xl border border-gray-200/60 dark:border-gray-800/40 bg-white/80 dark:bg-gray-500/5 backdrop-blur-sm px-4 py-3 shadow-sm"
 	>
 		<div class="mb-2 flex gap-2 text-xs font-medium items-center text-gray-600 dark:text-gray-400">
 			<Bolt />

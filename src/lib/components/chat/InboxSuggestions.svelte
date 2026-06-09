@@ -161,7 +161,7 @@
 
 {#if skillEnabled && (loading || rows.length > 0 || errored)}
 	<div
-		class="w-full font-primary mb-4 rounded-3xl border border-gray-100/40 dark:border-gray-800/40 bg-white/40 dark:bg-gray-500/5 backdrop-blur-sm px-4 py-3 shadow-sm"
+		class="w-full font-primary mb-4 rounded-3xl border border-gray-200/60 dark:border-gray-800/40 bg-white/80 dark:bg-gray-500/5 backdrop-blur-sm px-4 py-3 shadow-sm"
 		in:fade={{ duration: 200, delay: 100 }}
 		data-testid="inbox-suggestions"
 	>

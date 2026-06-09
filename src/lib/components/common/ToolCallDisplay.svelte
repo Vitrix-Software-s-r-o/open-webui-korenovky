@@ -1,8 +1,14 @@
+<script context="module" lang="ts">
+	import { writable } from 'svelte/store';
+	let emailDraftLockHeld = false; // non-reactive, synchronous lock (no race condition)
+	export const emailDraftSignal = writable(0); // reactive trigger to wake up waiting drafts
+</script>
+
 <script lang="ts">
 	import { decode } from 'html-entities';
 	import { v4 as uuidv4 } from 'uuid';
 
-	import { getContext } from 'svelte';
+	import { getContext, onDestroy } from 'svelte';
 	const i18n = getContext('i18n');
 
 	import { slide } from 'svelte/transition';
@@ -91,21 +97,40 @@
 
 	let showEmailDraft = false;
 	let emailSendResult: { status: string } | null = null;
-	let _emailDraftAutoOpened = false;
+	let _emailDraftHandled = false;
+	let _holdsLock = false;
 
+	function _releaseLock() {
+		if (_holdsLock) {
+			emailDraftLockHeld = false;
+			_holdsLock = false;
+			emailDraftSignal.update((n) => n + 1); // wake up waiting drafts
+		}
+	}
+
+	onDestroy(_releaseLock);
+
+	// Re-runs whenever parsedResult, isDone, or emailDraftSignal changes.
+	// emailDraftSignal subscription ensures waiting drafts retry after lock release.
 	$: if (
-		!_emailDraftAutoOpened &&
+		!_emailDraftHandled &&
+		$emailDraftSignal !== undefined &&
 		parsedResult &&
 		typeof parsedResult === 'object' &&
 		(parsedResult as any).type === 'email_draft_dialog' &&
 		isDone
 	) {
 		const draftId = (parsedResult as any).draft_id;
-		if (!localStorage.getItem(`email-draft-done:${draftId}`)) {
+		if (localStorage.getItem(`email-draft-done:${draftId}`)) {
+			_emailDraftHandled = true; // already sent/cancelled
+		} else if (!emailDraftLockHeld) {
+			emailDraftLockHeld = true; // grab lock synchronously before any other reactive block runs
+			_holdsLock = true;
 			showEmailDraft = true;
 			open = true;
+			_emailDraftHandled = true;
 		}
-		_emailDraftAutoOpened = true;
+		// lock is held by another draft — don't set _emailDraftHandled, retry when signal fires
 	}
 </script>
 
@@ -245,8 +270,10 @@
 											draft={(parsedResult as any).draft}
 											on:close={(e) => {
 												showEmailDraft = false;
+												open = false;
 												emailSendResult = e.detail;
 												localStorage.setItem(`email-draft-done:${(parsedResult as any).draft_id}`, '1');
+												_releaseLock();
 											}}
 										/>
 									{:else if emailSendResult}
@@ -261,10 +288,10 @@
 										</div>
 									{:else}
 										<button
-											on:click={() => (showEmailDraft = true)}
+											on:click={() => { showEmailDraft = true; open = true; }}
 											class="text-sm text-blue-600 dark:text-blue-400 hover:underline px-1"
 										>
-											Znovu otevřít dialog →
+											Otevřít dialog →
 										</button>
 									{/if}
 								{:else if typeof parsedResult === 'object' && parsedResult !== null}
