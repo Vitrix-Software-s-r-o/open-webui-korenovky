@@ -152,7 +152,7 @@ else:
 VERSION = PACKAGE_DATA['version']
 
 
-DEPLOYMENT_ID = os.environ.get('DEPLOYMENT_ID', '')
+DEPLOYMENT_ID = os.environ.get('DEPLOYMENT_ID', '') or str(uuid4())[:8]
 INSTANCE_ID = os.environ.get('INSTANCE_ID', str(uuid4()))
 
 ENABLE_DB_MIGRATIONS = os.environ.get('ENABLE_DB_MIGRATIONS', 'True').lower() == 'true'
