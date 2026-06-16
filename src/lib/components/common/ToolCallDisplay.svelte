@@ -1,14 +1,8 @@
-<script context="module" lang="ts">
-	import { writable } from 'svelte/store';
-	let emailDraftLockHeld = false; // non-reactive, synchronous lock (no race condition)
-	export const emailDraftSignal = writable(0); // reactive trigger to wake up waiting drafts
-</script>
-
 <script lang="ts">
 	import { decode } from 'html-entities';
 	import { v4 as uuidv4 } from 'uuid';
 
-	import { getContext, onDestroy } from 'svelte';
+	import { getContext } from 'svelte';
 	const i18n = getContext('i18n');
 
 	import { slide } from 'svelte/transition';
@@ -22,7 +16,7 @@
 	import CheckCircle from '../icons/CheckCircle.svelte';
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
-	import EmailDraftDialog from '../email/EmailDraftDialog.svelte';
+	import { ingestAiDraft, openDraftId } from '$lib/stores/email';
 	import { settings } from '$lib/stores';
 
 	export let id: string = '';
@@ -95,42 +89,21 @@
 	$: parsedArgs = parseArguments(args);
 	$: parsedResult = parseJSONString(result);
 
-	let showEmailDraft = false;
-	let emailSendResult: { status: string } | null = null;
-	let _emailDraftHandled = false;
-	let _holdsLock = false;
+	let _emailDraftIngested = false;
 
-	function _releaseLock() {
-		if (_holdsLock) {
-			emailDraftLockHeld = false;
-			_holdsLock = false;
-			emailDraftSignal.update((n) => n + 1); // wake up waiting drafts
-		}
-	}
-
-	onDestroy(_releaseLock);
-
-	// Re-runs whenever parsedResult, isDone, or emailDraftSignal changes.
-	// emailDraftSignal subscription ensures waiting drafts retry after lock release.
+	// When an `email_draft_dialog` tool result is done, hand the AI draft to the
+	// per-chat draft store (which dedupes by version token, so a chat reload won't
+	// re-ingest or resurrect a sent/dropped draft). The non-modal panel + chips bar
+	// are rendered once by EmailDraftManager, not here.
 	$: if (
-		!_emailDraftHandled &&
-		$emailDraftSignal !== undefined &&
+		!_emailDraftIngested &&
 		parsedResult &&
 		typeof parsedResult === 'object' &&
 		(parsedResult as any).type === 'email_draft_dialog' &&
 		isDone
 	) {
-		const draftId = (parsedResult as any).draft_id;
-		if (localStorage.getItem(`email-draft-done:${draftId}`)) {
-			_emailDraftHandled = true; // already sent/cancelled
-		} else if (!emailDraftLockHeld) {
-			emailDraftLockHeld = true; // grab lock synchronously before any other reactive block runs
-			_holdsLock = true;
-			showEmailDraft = true;
-			open = true;
-			_emailDraftHandled = true;
-		}
-		// lock is held by another draft — don't set _emailDraftHandled, retry when signal fires
+		_emailDraftIngested = true;
+		ingestAiDraft((parsedResult as any).draft_id, (parsedResult as any).draft);
 	}
 </script>
 
@@ -264,36 +237,13 @@
 							</div>
 							<div class="w-full max-w-none!">
 								{#if typeof parsedResult === 'object' && parsedResult !== null && (parsedResult as any).type === 'email_draft_dialog'}
-									{#if showEmailDraft}
-										<EmailDraftDialog
-											draftId={(parsedResult as any).draft_id}
-											draft={(parsedResult as any).draft}
-											on:close={(e) => {
-												showEmailDraft = false;
-												open = false;
-												emailSendResult = e.detail;
-												localStorage.setItem(`email-draft-done:${(parsedResult as any).draft_id}`, '1');
-												_releaseLock();
-											}}
-										/>
-									{:else if emailSendResult}
-										<div
-											class="text-sm px-3 py-2 rounded-lg {emailSendResult.status === 'sent'
-												? 'bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300'
-												: 'bg-gray-50 dark:bg-gray-900 text-gray-500'}"
-										>
-											{emailSendResult.status === 'sent'
-												? '✓ E-mail byl odeslán'
-												: 'E-mail byl zrušen'}
-										</div>
-									{:else}
-										<button
-											on:click={() => { showEmailDraft = true; open = true; }}
-											class="text-sm text-blue-600 dark:text-blue-400 hover:underline px-1"
-										>
-											Otevřít dialog →
-										</button>
-									{/if}
+									<button
+										on:click={() => openDraftId.set((parsedResult as any).draft_id)}
+										class="inline-flex items-center gap-1.5 text-sm text-blue-600 dark:text-blue-400 hover:underline px-1"
+									>
+										<svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5" /><path d="M3 5.5l7 5 7-5" /></svg>
+										Otevřít koncept e-mailu →
+									</button>
 								{:else if typeof parsedResult === 'object' && parsedResult !== null}
 									<pre
 										class="text-xs text-gray-600 dark:text-gray-300 whitespace-pre font-mono bg-gray-50 dark:bg-gray-900 rounded-lg p-2.5 overflow-x-auto">{JSON.stringify(

@@ -1,58 +1,262 @@
 <script lang="ts">
   import { toast } from 'svelte-sonner';
   import { createEventDispatcher, onMount, onDestroy, tick } from 'svelte';
-  import { marked } from 'marked';
+  import { get } from 'svelte/store';
   import DOMPurify from 'dompurify';
   import EmailBodyEditor from './EmailBodyEditor.svelte';
+  import DraftVersionNav from './DraftVersionNav.svelte';
+  import { uploadFile } from '$lib/apis/files';
+  import { emailDraftWindow, setDraftWindow, chatAttachedFiles } from '$lib/stores/email';
+  import type { DraftAttachment, DraftVersion, DraftStatus } from '$lib/stores/email';
+
+  // --- Props (controlled by EmailDraftManager / the email-drafts store) ---
+  export let draftId: string;
+  export let mailboxId: string = '';
+  export let version: DraftVersion;
+  export let status: DraftStatus = 'active';
+  export let versionIndex: number = 0;
+  export let versionCount: number = 1;
+
+  const dispatch = createEventDispatcher<{
+    edit: Partial<DraftVersion>;
+    revert: { index: number };
+    sent: void;
+    drop: void;
+    close: void;
+  }>();
 
   let dialogEl: HTMLElement;
+  let cardEl: HTMLElement;
+
+  // --- Shared, chat-persisted window geometry (size + position + snap edge).
+  // Only one draft window is open at a time, so all drafts share one state. ---
+  $: win = $emailDraftWindow;
+
+  // Track the viewport so snapped/clamped geometry recomputes on browser resize.
+  let vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  let vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  function onResize() {
+    vw = window.innerWidth;
+    vh = window.innerHeight;
+  }
+
+  // First-open default: snapped to the right at ~1/3 of the viewport width. If
+  // that third would be narrower than 400px (small screens), open maximized.
+  function defaultWindow(vw0: number, vh0: number) {
+    const third = Math.floor(vw0 / 3);
+    return {
+      x: Math.max(16, vw0 - Math.min(480, vw0 - 32) - 16),
+      y: 24,
+      w: third,
+      h: Math.min(620, Math.round(vh0 * 0.85)),
+      snap: (third < 400 ? 'top' : 'right') as const
+    };
+  }
+
+  // Resolve the concrete on-screen rectangle from the (possibly snapped) state.
+  // Snapped rects derive from the live viewport, so a browser resize re-flows
+  // them; free rects are clamped so a resize can't strand them off-screen.
+  function computeGeom(s: any, vw0: number, vh0: number) {
+    const snap = s?.snap ?? 'none';
+    // Snapped left/right keep a full-height column docked to the edge; their width
+    // is `s.w` (defaults to half on snap) so it stays user-resizable.
+    if (snap === 'left') {
+      const w = Math.max(360, Math.min(s.w, vw0));
+      return { x: 0, y: 0, w, h: vh0 };
+    }
+    if (snap === 'right') {
+      const w = Math.max(360, Math.min(s.w, vw0));
+      return { x: vw0 - w, y: 0, w, h: vh0 };
+    }
+    if (snap === 'top') return { x: 0, y: 0, w: vw0, h: vh0 };
+    const w = Math.min(s.w, vw0);
+    const h = Math.min(s.h, vh0);
+    const x = Math.max(0, Math.min(s.x, vw0 - Math.min(w, 120)));
+    const y = Math.max(0, Math.min(s.y, vh0 - 40));
+    return { x, y, w, h };
+  }
+
+  $: effWin = win ?? defaultWindow(vw, vh);
+  $: geom = computeGeom(effWin, vw, vh);
+  $: snapped = (effWin.snap ?? 'none') !== 'none';
+  $: cardStyle = `left:${geom.x}px; top:${geom.y}px; width:${geom.w}px; height:${geom.h}px;`;
+  // Free window → all handles; snapped left/right → only the inner edge (width);
+  // snapped top (full) → none.
+  $: visibleHandles = !snapped
+    ? RESIZE_HANDLES
+    : effWin.snap === 'left'
+      ? RESIZE_HANDLES.filter((h) => h.dir === 'e')
+      : effWin.snap === 'right'
+        ? RESIZE_HANDLES.filter((h) => h.dir === 'w')
+        : [];
+
+  const SNAP_T = 28; // px from an edge that arms a snap while dragging
+  let snapHint: 'left' | 'right' | 'top' | null = null;
+  $: snapPreviewStyle =
+    snapHint === 'left'
+      ? `left:0; top:0; width:${Math.floor(vw / 2)}px; height:${vh}px;`
+      : snapHint === 'right'
+        ? `left:${vw - Math.floor(vw / 2)}px; top:0; width:${Math.floor(vw / 2)}px; height:${vh}px;`
+        : snapHint === 'top'
+          ? `left:0; top:0; width:${vw}px; height:${vh}px;`
+          : '';
+
+  function startDrag(e: PointerEvent) {
+    // Drag from anywhere in the window, except interactive controls so inputs,
+    // the editor, buttons, attachments and the signature iframe still work.
+    if (
+      (e.target as HTMLElement).closest(
+        'button, a, input, textarea, select, iframe, [contenteditable="true"], [role="textbox"], .ProseMirror, .tiptap'
+      )
+    )
+      return;
+    if (e.button !== 0) return; // primary button only
+    const baseX = geom.x;
+    const baseY = geom.y;
+    const freeW = win && win.snap === 'none' ? win.w : Math.min(480, vw - 32);
+    const freeH = win && win.snap === 'none' ? win.h : Math.min(620, Math.round(vh * 0.85));
+    const start = { px: e.clientX, py: e.clientY };
+    let dragging = false; // becomes true once the pointer clears a small threshold
+    function move(ev: PointerEvent) {
+      const dx = ev.clientX - start.px;
+      const dy = ev.clientY - start.py;
+      if (!dragging) {
+        if (Math.abs(dx) + Math.abs(dy) < 6) return; // ignore clicks / micro-moves
+        dragging = true;
+        // Releasing a snapped window into a free one at its current spot.
+        setDraftWindow({ snap: 'none', x: baseX, y: baseY, w: freeW, h: freeH });
+      }
+      const x = Math.max(0, Math.min(baseX + dx, vw - 80));
+      const y = Math.max(0, Math.min(baseY + dy, vh - 40));
+      setDraftWindow({ x, y });
+      snapHint =
+        ev.clientX <= SNAP_T
+          ? 'left'
+          : ev.clientX >= vw - SNAP_T
+            ? 'right'
+            : ev.clientY <= SNAP_T
+              ? 'top'
+              : null;
+    }
+    function up() {
+      // New snaps default to a half-viewport-wide column (resizable afterwards).
+      if (dragging && snapHint) setDraftWindow({ snap: snapHint, w: Math.floor(vw / 2) });
+      snapHint = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    e.preventDefault();
+  }
+
+  const MIN_W = 360;
+  const MIN_H = 280;
+  const RESIZE_HANDLES = [
+    { dir: 'n', cls: 'top-0 left-2 right-2 h-1.5 cursor-ns-resize' },
+    { dir: 's', cls: 'bottom-0 left-2 right-2 h-1.5 cursor-ns-resize' },
+    { dir: 'e', cls: 'top-2 bottom-2 right-0 w-1.5 cursor-ew-resize' },
+    { dir: 'w', cls: 'top-2 bottom-2 left-0 w-1.5 cursor-ew-resize' },
+    { dir: 'ne', cls: 'top-0 right-0 size-3 cursor-nesw-resize' },
+    { dir: 'nw', cls: 'top-0 left-0 size-3 cursor-nwse-resize' },
+    { dir: 'se', cls: 'bottom-0 right-0 size-3 cursor-nwse-resize' },
+    { dir: 'sw', cls: 'bottom-0 left-0 size-3 cursor-nesw-resize' }
+  ];
+
+  function startResize(dir: string, e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const snapMode = effWin.snap ?? 'none';
+    const start = { px: e.clientX, py: e.clientY, x: geom.x, y: geom.y, w: geom.w, h: geom.h };
+    function move(ev: PointerEvent) {
+      const dx = ev.clientX - start.px;
+      const dy = ev.clientY - start.py;
+      // Snapped left/right: only the docked width changes; keep the snap + full height.
+      if (snapMode === 'left' || snapMode === 'right') {
+        const raw = snapMode === 'left' ? start.w + dx : start.w - dx;
+        setDraftWindow({ w: Math.max(MIN_W, Math.min(raw, vw - 40)) });
+        return;
+      }
+      let { x, y, w, h } = start;
+      if (dir.includes('e')) w = start.w + dx;
+      if (dir.includes('s')) h = start.h + dy;
+      if (dir.includes('w')) {
+        w = start.w - dx;
+        x = start.x + dx;
+      }
+      if (dir.includes('n')) {
+        h = start.h - dy;
+        y = start.y + dy;
+      }
+      if (w < MIN_W) {
+        if (dir.includes('w')) x -= MIN_W - w;
+        w = MIN_W;
+      }
+      if (h < MIN_H) {
+        if (dir.includes('n')) y -= MIN_H - h;
+        h = MIN_H;
+      }
+      x = Math.max(0, Math.min(x, vw - 60));
+      y = Math.max(0, Math.min(y, vh - 40));
+      w = Math.min(w, vw - x - 8);
+      h = Math.min(h, vh - y - 8);
+      setDraftWindow({ snap: 'none', x, y, w, h });
+    }
+    function up() {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  function toggleMaximize() {
+    setDraftWindow({ snap: (win?.snap ?? 'none') === 'top' ? 'none' : 'top' });
+  }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return;
-    // The dialog owns ESC for as long as it is mounted. Stop the event before
-    // any other listener (e.g. OWUI's chat-level ESC handler that aborts the
-    // in-flight MCP stream) can see it. Registered in capture phase below so
-    // we fire first regardless of registration order.
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    // Stacked-overlay precedence: peel off the topmost open layer first.
     if (previewState) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
       closePreview();
-    } else if (showDropbox) {
+      return;
+    }
+    if (showDropbox || showChatFiles) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
       showDropbox = false;
+      showChatFiles = false;
       dropboxQuery = '';
       dropboxResults = [];
-    } else if (!sending) {
-      handleCancel();
+      return;
+    }
+    // Focus inside the panel: swallow ESC so it can't abort the chat stream, but
+    // otherwise do nothing — closing is via the × button (reopen from the bar).
+    const active = document.activeElement;
+    if (!sending && dialogEl && active instanceof Node && dialogEl.contains(active)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
     }
   }
 
   onMount(() => {
     if (dialogEl) document.body.appendChild(dialogEl);
-    // Capture phase so we beat any outer ESC handler (e.g. OWUI chat stream abort).
+    if (!get(emailDraftWindow)) setDraftWindow(defaultWindow(vw, vh));
     window.addEventListener('keydown', handleGlobalKeydown, true);
+    window.addEventListener('resize', onResize);
   });
 
   onDestroy(() => {
     if (dialogEl?.parentNode) dialogEl.parentNode.removeChild(dialogEl);
     window.removeEventListener('keydown', handleGlobalKeydown, true);
+    window.removeEventListener('resize', onResize);
+    clearTimeout(editTimer);
+    clearTimeout(flashTimer);
+    for (const u of Object.values(blobUrls)) URL.revokeObjectURL(u);
   });
 
-  const dispatch = createEventDispatcher<{ close: { status: 'sent' | 'cancelled' } }>();
-
-  export let draftId: string;
-  export let draft: {
-    from: string;
-    to: string[];
-    cc: string[];
-    bcc: string[];
-    subject: string;
-    body: string;
-    signature: string;
-    attachments: Array<{ type: string; filename: string; upload_index?: number; ref?: string; download_url?: string; open_url?: string }>;
-  };
-
+  // --- Send state ---
   let sending = false;
   let dialogAnimClass = 'dialog-pop-in';
   let showSuccessBadge = false;
@@ -61,40 +265,102 @@
   function onSendAnimationEnd(e: AnimationEvent) {
     if ((e.target as HTMLElement)?.classList.contains('dialog-send-out')) {
       showSuccessBadge = true;
-      setTimeout(() => dispatch('close', { status: 'sent' }), 1800);
+      setTimeout(() => dispatch('sent'), 1500);
     }
   }
-  let to = [...draft.to];
-  let cc = [...(draft.cc ?? [])];
-  let subject = draft.subject;
-  let attachments = [...(draft.attachments ?? [])];
+
+  // --- Editable state, (re)initialised whenever the bound version changes ---
+  let to: string[] = [];
+  let cc: string[] = [];
+  let subject = '';
+  let attachments: DraftAttachment[] = [];
+  let bodyInitialHtml = '';
+  let signatureHtml = '';
+  let signatureSrcdoc = '';
   let bodyEditor: EmailBodyEditor;
   let signatureFrame: HTMLIFrameElement;
 
-  // Convert Markdown body from AI to HTML for TipTap editor
-  const bodyHtml = DOMPurify.sanitize(marked.parse(draft.body) as string);
-  // Signature is already HTML — sanitize permissively to preserve complex tables/inline CSS
-  const signatureHtml = DOMPurify.sanitize(draft.signature, {
-    ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'td', 'th', 'img'],
-    ADD_ATTR: [
-      'width', 'height', 'cellpadding', 'cellspacing', 'border',
-      'bgcolor', 'align', 'valign', 'colspan', 'rowspan',
-      'style', 'src', 'href', 'target', 'alt'
-    ],
-  });
-
-  // Wrap the signature in a minimal HTML doc so it renders inside an iframe
-  // fully isolated from the app's Tailwind/dark-mode CSS — only the
-  // signature's own inline styles apply, and the background is always white.
-  const signatureSrcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>
-    html, body { margin: 0; padding: 0; background: #ffffff; color: #1a1a1a; color-scheme: light; }
-    body { padding: 6px 8px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; line-height: 1.4; overflow: auto; }
-    body:focus { outline: none; }
-  </style></head><body contenteditable="true">${signatureHtml}</body></html>`;
-  let uploadedFiles: File[] = [];
-
   let toInput = '';
   let ccInput = '';
+
+  // Local files kept in memory for fast preview/send. owui_file attachments are
+  // durable (OWUI file id); the cache avoids a round-trip for just-added files.
+  let uploadedFiles: File[] = [];
+  let owuiBlobs: Record<string, File> = {};
+  let blobUrls: Record<string, string> = {};
+
+  let initializing = true;
+  let versionKey = '';
+  let prevAt: number | null = null;
+  let showFlash = false;
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const SIG_OPTS = {
+    ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'td', 'th', 'img'],
+    ADD_ATTR: [
+      'width', 'height', 'cellpadding', 'cellspacing', 'border', 'bgcolor',
+      'align', 'valign', 'colspan', 'rowspan', 'style', 'src', 'href', 'target', 'alt'
+    ]
+  };
+
+  $: nextKey = `${draftId}:${versionIndex}:${version?.at ?? 0}`;
+  $: if (version && nextKey !== versionKey) {
+    versionKey = nextKey;
+    initFromVersion();
+  }
+
+  async function initFromVersion() {
+    initializing = true;
+    to = [...(version.to ?? [])];
+    cc = [...(version.cc ?? [])];
+    subject = version.subject ?? '';
+    attachments = [...(version.attachments ?? [])];
+    bodyInitialHtml = version.body ?? '';
+    signatureHtml = DOMPurify.sanitize(version.signature ?? '', SIG_OPTS);
+    signatureSrcdoc = `<!doctype html><html><head><meta charset="utf-8"><style>
+      html, body { margin: 0; padding: 0; background: #ffffff; color: #1a1a1a; color-scheme: light; }
+      body { padding: 6px 8px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; line-height: 1.4; overflow: auto; }
+      body:focus { outline: none; }
+    </style></head><body contenteditable="true">${signatureHtml}</body></html>`;
+
+    // Flash when the assistant has produced a new version (not on first mount/revert-to-same).
+    if (prevAt !== null && version.authoredBy === 'ai' && version.at !== prevAt) {
+      showFlash = true;
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => (showFlash = false), 2000);
+    }
+    prevAt = version.at;
+
+    await tick();
+    initializing = false;
+
+    // Converge external attachment refs into the internal store on open.
+    void materializeAttachments();
+  }
+
+  // --- Manual-edit sync-back (debounced) -------------------------------
+  let editTimer: ReturnType<typeof setTimeout> | undefined;
+  function scheduleEdit() {
+    if (initializing) return;
+    clearTimeout(editTimer);
+    editTimer = setTimeout(emitEdit, 500);
+  }
+  function emitEdit() {
+    if (initializing) return;
+    const body = bodyEditor?.getHtml() ?? bodyInitialHtml;
+    const signatureRaw = signatureFrame?.contentDocument?.body?.innerHTML ?? signatureHtml;
+    const signature = DOMPurify.sanitize(signatureRaw, SIG_OPTS);
+    dispatch('edit', {
+      to: [...to],
+      cc: [...cc],
+      subject,
+      attachments: [...attachments],
+      body,
+      signature
+    });
+  }
+  // Recompute on field changes (guarded against the init pass).
+  $: void [to, cc, subject, attachments], scheduleEdit();
 
   // --- Attachment preview ---
   type PreviewState = { filename: string; url: string; isImage: boolean; isPdf: boolean };
@@ -104,8 +370,6 @@
     return filename.split('.').pop()?.toLowerCase() ?? '';
   }
 
-  // Brand-colored badge metadata per file type — used to render file-type icons
-  // in the Dropbox picker and the attachment chips.
   function getFileMeta(name: string): { color: string; label: string } {
     const ext = getExt(name);
     if (ext === 'pdf') return { color: '#dc2626', label: 'PDF' };
@@ -124,36 +388,97 @@
     return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'pdf'].includes(ext);
   }
 
-  function handleAttachmentClick(att: typeof attachments[0]) {
-    // Dropbox files — always open in Dropbox so the user gets the full
-    // Dropbox UI (versions, sharing, etc) instead of a barebones preview.
-    if (att.type === 'dropbox') {
-      if (att.open_url) {
-        window.open(att.open_url, '_blank', 'noopener,noreferrer');
-      } else {
-        toast.error('Soubor z Dropboxu nemá odkaz pro otevření');
+  // --- Single convergence point: every attachment ends up in the internal OWUI
+  // file store as an `owui_file`. Imports dropbox / office_file / pending-upload
+  // sources by fetching their bytes and uploading to /files/. Returns the input
+  // unchanged if it's already owui_file or if import fails (so sending still works).
+  async function materializeAttachment(att: DraftAttachment): Promise<DraftAttachment> {
+    if (att.type === 'owui_file' && att.file_id) return att;
+    try {
+      let blob: Blob | null = null;
+      if (att.type === 'dropbox' && att.ref) {
+        const r = await fetch(`/api/dropbox-file?path=${encodeURIComponent(att.ref)}`);
+        if (r.ok) blob = await r.blob();
+      } else if (att.type === 'office_file' && att.download_url) {
+        const r = await fetch(att.download_url);
+        if (r.ok) blob = await r.blob();
+      } else if (att.type === 'upload' && att.upload_index !== undefined) {
+        blob = uploadedFiles[att.upload_index] ?? null;
       }
+      if (!blob) return att;
+      const file = new File([blob], att.filename, {
+        type: blob.type || 'application/octet-stream'
+      });
+      const res = await uploadFile(localStorage.token, file, { email_attachment: true }, false);
+      const id = (res as any)?.id;
+      if (!id) return att;
+      owuiBlobs[id] = file;
+      return { type: 'owui_file', filename: att.filename, file_id: id };
+    } catch {
+      return att;
+    }
+  }
+
+  // Converge any not-yet-internal attachments (AI office_file refs, legacy dropbox
+  // refs from persisted drafts) into the OWUI store, then persist the normalised
+  // list. Guards against the version changing underneath us.
+  async function materializeAttachments() {
+    const key = versionKey;
+    const snapshot = attachments;
+    if (!snapshot.some((a) => a.type !== 'owui_file' || !a.file_id)) return;
+    const out = await Promise.all(snapshot.map(materializeAttachment));
+    if (versionKey !== key) return;
+    attachments = attachments.map((a) => {
+      const i = snapshot.indexOf(a);
+      return i >= 0 ? out[i] : a;
+    });
+    emitEdit();
+  }
+
+  async function fetchOwuiBlob(fileId: string): Promise<File | null> {
+    if (owuiBlobs[fileId]) return owuiBlobs[fileId];
+    try {
+      const resp = await fetch(`/api/v1/files/${fileId}/content`, {
+        headers: { authorization: `Bearer ${localStorage.token}` }
+      });
+      if (!resp.ok) return null;
+      const blob = await resp.blob();
+      return new File([blob], 'file', { type: blob.type });
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleAttachmentClick(att: DraftAttachment) {
+    if (att.type === 'dropbox') {
+      if (att.open_url) window.open(att.open_url, '_blank', 'noopener,noreferrer');
+      else toast.error('Soubor z Dropboxu nemá odkaz pro otevření');
       return;
     }
 
     const ext = getExt(att.filename);
-    // files-link (office_file) attachments that the browser can't preview
-    // (docx/xlsx/pptx/zip/…) — skip the empty preview modal and just hand the
-    // signed download URL to the browser; the Content-Disposition header
-    // already makes it a download.
     if (att.type === 'office_file' && att.download_url && !isPreviewableExt(ext)) {
       window.open(att.download_url, '_blank', 'noopener,noreferrer');
       return;
     }
 
-    // Otherwise — open the in-dialog preview (works for images/PDFs + local
-    // uploads via blob URL).
     const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext);
     const isPdf = ext === 'pdf';
     let url = '';
     if (att.type === 'upload' && att.upload_index !== undefined) {
       const file = uploadedFiles[att.upload_index];
       if (file) url = URL.createObjectURL(file);
+    } else if (att.type === 'owui_file' && att.file_id) {
+      if (!isPreviewableExt(ext)) {
+        const f = await fetchOwuiBlob(att.file_id);
+        if (f) {
+          const u = URL.createObjectURL(f);
+          window.open(u, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
+      const f = owuiBlobs[att.file_id] ?? (await fetchOwuiBlob(att.file_id));
+      if (f) url = URL.createObjectURL(f);
     } else if (att.type === 'office_file' && att.download_url) {
       url = att.download_url;
     }
@@ -184,21 +509,28 @@
     }
   }
 
-  function handleFileInput(e: Event) {
+  // Local uploads are imported into durable OWUI storage so a persisted draft
+  // keeps its files across reloads. On failure we fall back to a non-durable
+  // in-memory 'upload' attachment so the user can still send right now.
+  async function handleFileInput(e: Event) {
     const input = e.target as HTMLInputElement;
     if (!input.files) return;
     const newFiles = Array.from(input.files);
-    const startIdx = uploadedFiles.length;
-    uploadedFiles = [...uploadedFiles, ...newFiles];
-    attachments = [
-      ...attachments,
-      ...newFiles.map((f, i) => ({
-        type: 'upload',
-        filename: f.name,
-        upload_index: startIdx + i,
-      })),
-    ];
     input.value = '';
+    for (const f of newFiles) {
+      try {
+        const res = await uploadFile(localStorage.token, f, { email_attachment: true }, false);
+        const id = (res as any)?.id;
+        if (!id) throw new Error('no id');
+        owuiBlobs[id] = f;
+        attachments = [...attachments, { type: 'owui_file', filename: f.name, file_id: id }];
+      } catch (err) {
+        const idx = uploadedFiles.length;
+        uploadedFiles = [...uploadedFiles, f];
+        attachments = [...attachments, { type: 'upload', filename: f.name, upload_index: idx }];
+        toast.error(`Soubor „${f.name}" se nepodařilo trvale uložit — bude odeslán pouze nyní.`);
+      }
+    }
   }
 
   function removeAttachment(idx: number) {
@@ -208,16 +540,13 @@
       let counter = 0;
       attachments = attachments
         .filter((_, i) => i !== idx)
-        .map((a) =>
-          a.type === 'upload' ? { ...a, upload_index: counter++ } : a
-        );
+        .map((a) => (a.type === 'upload' ? { ...a, upload_index: counter++ } : a));
     } else {
       attachments = attachments.filter((_, i) => i !== idx);
     }
   }
 
   async function handleSend() {
-    // Commit any uncommitted typed addresses (user may have typed without pressing Enter/comma)
     if (toInput.trim()) {
       to = addTag(to, toInput);
       toInput = '';
@@ -233,25 +562,55 @@
     sending = true;
     sendError = '';
     try {
-      const formData = new FormData();
-      const currentBodyHtml = bodyEditor?.getHtml() ?? bodyHtml;
+      const currentBodyHtml = bodyEditor?.getHtml() ?? bodyInitialHtml;
       const signatureRaw = signatureFrame?.contentDocument?.body?.innerHTML ?? signatureHtml;
-      const currentSignatureHtml = DOMPurify.sanitize(
-        signatureRaw,
-        {
-          ADD_TAGS: ['table', 'thead', 'tbody', 'tr', 'td', 'th', 'img'],
-          ADD_ATTR: ['width', 'height', 'cellpadding', 'cellspacing', 'border', 'bgcolor', 'align', 'valign', 'colspan', 'rowspan', 'style', 'src', 'href', 'target', 'alt'],
+      const currentSignatureHtml = DOMPurify.sanitize(signatureRaw, SIG_OPTS);
+
+      // Resolve durable (owui_file) and pending (upload) attachments into bytes;
+      // dropbox / office_file refs are resolved server-side at send.
+      const sendAttachments: any[] = [];
+      const filesToSend: File[] = [];
+      for (const att of attachments) {
+        if (att.type === 'upload' && att.upload_index !== undefined) {
+          const f = uploadedFiles[att.upload_index];
+          if (f) {
+            sendAttachments.push({ type: 'upload', filename: att.filename, upload_index: filesToSend.length });
+            filesToSend.push(f);
+          }
+        } else if (att.type === 'owui_file' && att.file_id) {
+          const f = owuiBlobs[att.file_id] ?? (await fetchOwuiBlob(att.file_id));
+          if (f) {
+            sendAttachments.push({ type: 'upload', filename: att.filename, upload_index: filesToSend.length });
+            filesToSend.push(new File([f], att.filename, { type: f.type }));
+          } else {
+            throw new Error(`Přílohu „${att.filename}" se nepodařilo načíst`);
+          }
+        } else {
+          sendAttachments.push(att);
         }
-      );
+      }
+
+      const formData = new FormData();
       formData.append(
         'draft_json',
-        JSON.stringify({ to, cc, bcc: [], subject, body: currentBodyHtml, signature: currentSignatureHtml, attachments })
+        JSON.stringify({
+          mailbox_id: mailboxId,
+          to,
+          cc,
+          bcc: version.bcc ?? [],
+          subject,
+          body: currentBodyHtml,
+          signature: currentSignatureHtml,
+          attachments: sendAttachments,
+          in_reply_to: version.in_reply_to ?? null,
+          references: version.references ?? null
+        })
       );
-      uploadedFiles.forEach((f) => formData.append('files', f));
+      filesToSend.forEach((f) => formData.append('files', f));
 
       const resp = await fetch(`/api/email-drafts/${draftId}/send`, {
         method: 'POST',
-        body: formData,
+        body: formData
       });
 
       if (!resp.ok) {
@@ -275,12 +634,16 @@
     }
   }
 
-  async function handleCancel() {
-    await fetch(`/api/email-drafts/${draftId}/cancel`, { method: 'POST' }).catch(() => {});
-    dispatch('close', { status: 'cancelled' });
+  function handleClose() {
+    emitEdit();
+    dispatch('close');
   }
 
-  // Dropbox picker
+  function handleDrop() {
+    dispatch('drop');
+  }
+
+  // --- Dropbox picker ---
   let showDropbox = false;
   let dropboxQuery = '';
   let dropboxQueryInput: HTMLInputElement;
@@ -325,7 +688,7 @@
           path_lower: r.path_lower ?? display,
           folder_path: folder,
           modified: r.server_modified ?? r.client_modified ?? '',
-          open_url: r.open_url ?? r.dropbox_url ?? '',
+          open_url: r.open_url ?? r.dropbox_url ?? ''
         };
       });
     } catch {
@@ -335,58 +698,136 @@
     }
   }
 
-  function addDropboxFile(file: DropboxResult) {
+  let importingAttachment = false;
+  async function addDropboxFile(file: DropboxResult) {
     const ref = file.path_display || file.path_lower;
     if (!ref) {
       toast.error('Soubor z Dropboxu nemá platnou cestu');
       return;
     }
-    attachments = [
-      ...attachments,
-      { type: 'dropbox', filename: file.name, ref, open_url: file.open_url }
-    ];
     showDropbox = false;
     dropboxQuery = '';
     dropboxResults = [];
+    // Import into the internal store immediately so every source converges.
+    importingAttachment = true;
+    const att = await materializeAttachment({
+      type: 'dropbox',
+      filename: file.name,
+      ref,
+      open_url: file.open_url
+    });
+    importingAttachment = false;
+    if (att.type !== 'owui_file') {
+      toast.error(`Soubor „${file.name}" se nepodařilo importovat z Dropboxu`);
+      return;
+    }
+    attachments = [...attachments, att];
+  }
+
+  // --- Chat-file picker: attach a file already uploaded to this chat. It is
+  // already an OWUI file id, so it's added directly as an internal attachment. ---
+  let showChatFiles = false;
+  function toggleChatFiles() {
+    showChatFiles = !showChatFiles;
+    if (showChatFiles) showDropbox = false;
+  }
+  function addChatFile(f: { id: string; name: string }) {
+    if (attachments.some((a) => a.type === 'owui_file' && a.file_id === f.id)) {
+      toast.error('Tento soubor je již přiložen');
+      showChatFiles = false;
+      return;
+    }
+    attachments = [...attachments, { type: 'owui_file', filename: f.name, file_id: f.id }];
+    showChatFiles = false;
   }
 </script>
 
-<!-- Overlay — bind:this teleports to document.body on mount to escape CSS containment -->
+<!-- Non-modal floating panel — teleported to document.body on mount to escape CSS
+     containment. The wrapper spans the viewport but is click-through
+     (pointer-events-none); only the card and its sub-overlays capture pointer
+     events, so the chat behind it stays fully interactive. -->
 <div
   bind:this={dialogEl}
-  class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-  class:backdrop-fade-out={dialogAnimClass === 'dialog-send-out'}
+  class="fixed inset-0 z-50 pointer-events-none"
   role="dialog"
-  aria-modal="true"
+  aria-label="Návrh e-mailu"
 >
+  <!-- Snap preview — shows the target dock region while dragging near an edge -->
+  {#if snapHint}
+    <div
+      class="absolute z-[1] rounded-2xl bg-blue-500/15 border-2 border-blue-400/70 pointer-events-none"
+      style={snapPreviewStyle}
+    ></div>
+  {/if}
+
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div
-    class="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col {dialogAnimClass}"
+    bind:this={cardEl}
+    class="pointer-events-auto absolute bg-white dark:bg-gray-900 rounded-2xl shadow-2xl ring-1 flex flex-col overflow-hidden {dialogAnimClass} {showFlash
+      ? 'ring-2 ring-violet-400'
+      : 'ring-black/5 dark:ring-white/10'}"
+    style={cardStyle}
+    on:pointerdown={startDrag}
     on:animationend={onSendAnimationEnd}
   >
-    <!-- Header -->
+    <!-- Resize handles — all edges/corners when free; inner edge only when snapped -->
+    {#each visibleHandles as h}
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="absolute z-20 {h.cls}" on:pointerdown={(e) => startResize(h.dir, e)}></div>
+    {/each}
+
+    <!-- Header (title bar) -->
     <div
-      class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700"
+      class="relative z-10 flex items-center justify-between gap-2 px-5 py-3 border-b border-gray-200 dark:border-gray-700 select-none shrink-0 cursor-move"
     >
-      <h2 class="text-lg font-semibold text-gray-900 dark:text-white">Nový e-mail</h2>
-      <button
-        on:click={handleCancel}
-        class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
-        aria-label="Zavřít"
-      >×</button>
+      <div class="flex items-center gap-2 min-w-0">
+        <h2 class="text-base font-semibold text-gray-900 dark:text-white truncate">Nový e-mail</h2>
+        {#if showFlash}
+          <span class="text-[11px] text-violet-600 dark:text-violet-300 shrink-0 whitespace-nowrap">upraveno asistentem</span>
+        {/if}
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <DraftVersionNav
+          index={versionIndex}
+          count={versionCount}
+          authoredBy={version?.authoredBy ?? 'ai'}
+          on:revert
+        />
+        <button
+          on:click={toggleMaximize}
+          class="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+          aria-label={effWin.snap === 'top' ? 'Obnovit' : 'Maximalizovat'}
+          title={effWin.snap === 'top' ? 'Obnovit' : 'Maximalizovat'}
+        >
+          {#if effWin.snap === 'top'}
+            <svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="7" width="9" height="9" rx="1.5" /><path d="M7.5 7V5.5a1.5 1.5 0 011.5-1.5h5.5A1.5 1.5 0 0116 5.5V11a1.5 1.5 0 01-1.5 1.5H13" fill="none" stroke="currentColor" stroke-linecap="round" /></svg>
+          {:else}
+            <svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
+          {/if}
+        </button>
+        <button
+          on:click={handleClose}
+          class="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-xl leading-none"
+          aria-label="Zavřít"
+          title="Zavřít (koncept zůstane uložený)"
+        >×</button>
+      </div>
     </div>
 
-    <!-- Scrollable body -->
-    <div class="flex-1 overflow-y-auto px-6 py-5 space-y-4 text-sm">
+    <!-- Scrollable body — min-h-0 lets it shrink within the card so it scrolls
+         instead of pushing the footer out. -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-4 text-sm" on:focusout={emitEdit}>
 
       <!-- From (read-only) -->
       <div class="flex items-center gap-3">
-        <span class="w-20 shrink-0 font-medium text-gray-600 dark:text-gray-400">Od:</span>
-        <span class="text-gray-800 dark:text-gray-200">{draft.from}</span>
+        <span class="w-20 shrink-0 select-none font-medium text-gray-600 dark:text-gray-400">Od:</span>
+        <span class="text-gray-800 dark:text-gray-200">{version.from}</span>
       </div>
 
       <!-- To -->
       <div class="flex items-start gap-3">
-        <span class="w-20 shrink-0 font-medium text-gray-600 dark:text-gray-400 pt-1.5">Komu:</span>
+        <span class="w-20 shrink-0 select-none font-medium text-gray-600 dark:text-gray-400 pt-1.5">Komu:</span>
         <div
           class="flex-1 flex flex-wrap gap-1 border border-gray-200 dark:border-gray-700 rounded-lg p-1.5 min-h-[38px] focus-within:ring-2 focus-within:ring-blue-500"
         >
@@ -395,25 +836,21 @@
               class="inline-flex items-center gap-1 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-sm rounded px-2 py-0.5"
             >
               {email}
-              <button
-                on:click={() => (to = to.filter((_, j) => j !== i))}
-                class="hover:text-red-500">×</button
-              >
+              <button on:click={() => (to = to.filter((_, j) => j !== i))} class="hover:text-red-500">×</button>
             </span>
           {/each}
           <input
             bind:value={toInput}
             placeholder="email@example.com"
             class="flex-1 min-w-[150px] outline-none bg-transparent"
-            on:keydown={(e) =>
-              handleTagKey(e, to, (v) => (to = v), (v) => (toInput = v), toInput)}
+            on:keydown={(e) => handleTagKey(e, to, (v) => (to = v), (v) => (toInput = v), toInput)}
           />
         </div>
       </div>
 
       <!-- CC -->
       <div class="flex items-start gap-3">
-        <span class="w-20 shrink-0 font-medium text-gray-600 dark:text-gray-400 pt-1.5">Kopie:</span>
+        <span class="w-20 shrink-0 select-none font-medium text-gray-600 dark:text-gray-400 pt-1.5">Kopie:</span>
         <div
           class="flex-1 flex flex-wrap gap-1 border border-gray-200 dark:border-gray-700 rounded-lg p-1.5 min-h-[38px] focus-within:ring-2 focus-within:ring-blue-500"
         >
@@ -421,63 +858,94 @@
             <span
               class="inline-flex items-center gap-1 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 text-sm rounded px-2 py-0.5"
             >
-              {email}<button
-                on:click={() => (cc = cc.filter((_, j) => j !== i))}
-                class="hover:text-red-500">×</button
-              >
+              {email}<button on:click={() => (cc = cc.filter((_, j) => j !== i))} class="hover:text-red-500">×</button>
             </span>
           {/each}
           <input
             bind:value={ccInput}
             placeholder="email@example.com"
             class="flex-1 min-w-[150px] outline-none bg-transparent"
-            on:keydown={(e) =>
-              handleTagKey(e, cc, (v) => (cc = v), (v) => (ccInput = v), ccInput)}
+            on:keydown={(e) => handleTagKey(e, cc, (v) => (cc = v), (v) => (ccInput = v), ccInput)}
           />
         </div>
       </div>
 
       <!-- Subject -->
       <div class="flex items-center gap-3">
-        <span class="w-20 shrink-0 font-medium text-gray-600 dark:text-gray-400">Předmět:</span>
+        <span class="w-20 shrink-0 select-none font-medium text-gray-600 dark:text-gray-400">Předmět:</span>
         <input
           bind:value={subject}
           class="flex-1 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-transparent outline-none focus:ring-2 focus:ring-blue-500"
         />
       </div>
 
-      <!-- Body — Rich Text Editor -->
+      <!-- Body — Rich Text Editor (keyed so it re-mounts on version change/revert) -->
       <div>
-        <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Obsah zprávy</div>
-        <EmailBodyEditor
-          bind:this={bodyEditor}
-          initialHtml={bodyHtml}
-          minHeight="120px"
-        />
+        <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2 select-none">Obsah zprávy</div>
+        {#key versionKey}
+          <EmailBodyEditor
+            bind:this={bodyEditor}
+            initialHtml={bodyInitialHtml}
+            minHeight="120px"
+            on:change={scheduleEdit}
+          />
+        {/key}
       </div>
 
-      <!-- Signature — rendered inside an iframe so the parent's Tailwind/dark CSS
-           cannot leak in. The iframe body is contenteditable, always light-themed,
-           and only the signature's own inline styles apply. -->
+      <!-- Signature -->
       {#if signatureHtml}
         <div>
-          <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">Podpis</div>
-          <iframe
-            bind:this={signatureFrame}
-            srcdoc={signatureSrcdoc}
-            title="Podpis"
-            class="w-full border border-gray-200 dark:border-gray-700 rounded-lg bg-white"
-            style="height: 120px; min-height: 48px; max-height: 160px; color-scheme: light;"
-          ></iframe>
+          <div class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1 select-none">Podpis</div>
+          {#key versionKey}
+            <iframe
+              bind:this={signatureFrame}
+              srcdoc={signatureSrcdoc}
+              title="Podpis"
+              class="w-full border border-gray-200 dark:border-gray-700 rounded-lg bg-white"
+              style="height: 120px; min-height: 48px; max-height: 160px; color-scheme: light;"
+            ></iframe>
+          {/key}
         </div>
       {/if}
 
     </div>
 
-    <!-- Footer — attachments + actions always visible -->
+    <!-- Footer — attachments + actions -->
     <div class="border-t border-gray-200 dark:border-gray-700 px-6 pt-3 pb-4 flex flex-col gap-2 shrink-0">
 
-      <!-- Dropbox picker (expands above action row) -->
+      <!-- Chat-files picker -->
+      {#if showChatFiles}
+        <div class="border border-blue-200 dark:border-blue-800 rounded-lg p-2 space-y-1">
+          <div class="flex items-center justify-between px-1">
+            <span class="text-xs font-medium text-gray-600 dark:text-gray-400">Soubory z chatu</span>
+            <button
+              on:click={() => (showChatFiles = false)}
+              class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-lg leading-none"
+              aria-label="Zavřít"
+            >×</button>
+          </div>
+          <div class="max-h-56 overflow-y-auto -mx-1 px-1">
+            {#each $chatAttachedFiles as f (f.id)}
+              {@const meta = getFileMeta(f.name)}
+              <button
+                on:click={() => addChatFile(f)}
+                class="w-full flex items-center gap-1.5 text-left py-1.5 px-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-xs text-gray-800 dark:text-gray-200"
+              >
+                <svg class="shrink-0" width="14" height="17" viewBox="0 0 20 24" aria-hidden="true">
+                  <path d="M2 2a2 2 0 0 1 2-2h8l6 6v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2z" fill={meta.color} />
+                  <path d="M12 0v6h6" fill="white" fill-opacity="0.35" />
+                  {#if meta.label}
+                    <text x="10" y="17" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="700" font-size={meta.label.length >= 3 ? 6 : 8.5}>{meta.label}</text>
+                  {/if}
+                </svg>
+                <span class="truncate flex-1 min-w-0" title={f.name}>{f.name}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Dropbox picker -->
       {#if showDropbox}
         <div class="border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2">
           <div class="flex gap-2 items-center">
@@ -506,33 +974,22 @@
           {#each dropboxResults as file}
             {@const meta = getFileMeta(file.name)}
             <div class="flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
-              <button
-                on:click={() => addDropboxFile(file)}
-                class="flex-1 min-w-0 text-left py-1.5 px-2"
-              >
+              <button on:click={() => addDropboxFile(file)} class="flex-1 min-w-0 text-left py-1.5 px-2">
                 <div class="text-xs flex items-center gap-1.5 text-gray-800 dark:text-gray-200">
                   <svg class="shrink-0" width="14" height="17" viewBox="0 0 20 24" aria-hidden="true">
                     <path d="M2 2a2 2 0 0 1 2-2h8l6 6v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2z" fill={meta.color}/>
                     <path d="M12 0v6h6" fill="white" fill-opacity="0.35"/>
                     {#if meta.label}
-                      <text x="10" y="17" text-anchor="middle" fill="white"
-                            font-family="Arial, sans-serif" font-weight="700"
-                            font-size={meta.label.length >= 3 ? 6 : 8.5}>{meta.label}</text>
+                      <text x="10" y="17" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="700" font-size={meta.label.length >= 3 ? 6 : 8.5}>{meta.label}</text>
                     {/if}
                   </svg>
                   <span class="truncate flex-1 min-w-0" title={file.name}>{file.name}</span>
                   {#if file.modified}
-                    <span
-                      class="shrink-0 text-[10px] text-gray-500 dark:text-gray-400 tabular-nums"
-                      title={file.modified}
-                    >{formatModified(file.modified)}</span>
+                    <span class="shrink-0 text-[10px] text-gray-500 dark:text-gray-400 tabular-nums" title={file.modified}>{formatModified(file.modified)}</span>
                   {/if}
                 </div>
                 {#if file.folder_path}
-                  <div
-                    class="text-[10px] text-gray-500 dark:text-gray-400 truncate pl-5"
-                    title={file.folder_path}
-                  >{file.folder_path}</div>
+                  <div class="text-[10px] text-gray-500 dark:text-gray-400 truncate pl-5" title={file.folder_path}>{file.folder_path}</div>
                 {/if}
               </button>
               {#if file.open_url}
@@ -557,7 +1014,7 @@
         </div>
       {/if}
 
-      <!-- Attachment chips (only when there are attachments) -->
+      <!-- Attachment chips -->
       {#if attachments.length > 0}
         <div class="flex flex-wrap gap-1.5">
           {#each attachments as att, i}
@@ -572,9 +1029,7 @@
                   <path d="M2 2a2 2 0 0 1 2-2h8l6 6v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2z" fill={attMeta.color}/>
                   <path d="M12 0v6h6" fill="white" fill-opacity="0.35"/>
                   {#if attMeta.label}
-                    <text x="10" y="17" text-anchor="middle" fill="white"
-                          font-family="Arial, sans-serif" font-weight="700"
-                          font-size={attMeta.label.length >= 3 ? 6 : 8.5}>{attMeta.label}</text>
+                    <text x="10" y="17" text-anchor="middle" fill="white" font-family="Arial, sans-serif" font-weight="700" font-size={attMeta.label.length >= 3 ? 6 : 8.5}>{attMeta.label}</text>
                   {/if}
                 </svg>
                 <span class="truncate">{att.filename}</span>
@@ -594,9 +1049,9 @@
         </div>
       {/if}
 
-      <!-- Action row: add-attachment buttons left, send/cancel right -->
+      <!-- Action row -->
       <div class="flex items-center gap-2">
-        <span class="text-xs font-medium text-gray-500 dark:text-gray-400 shrink-0">Přílohy:</span>
+        <span class="text-xs font-medium text-gray-500 dark:text-gray-400 shrink-0 select-none">Přílohy:</span>
         <label class="cursor-pointer inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition">
           📎 Ze zařízení
           <input type="file" multiple class="hidden" on:change={handleFileInput} />
@@ -610,15 +1065,30 @@
         >
           📦 Z Dropboxu
         </button>
+        {#if $chatAttachedFiles.length > 0}
+          <button
+            on:click={toggleChatFiles}
+            class="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border transition
+              {showChatFiles
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+          >
+            💬 Z chatu
+          </button>
+        {/if}
+        {#if importingAttachment}
+          <span class="inline-flex items-center gap-1 text-xs text-gray-400"><span class="animate-spin inline-block">⟳</span> importuji…</span>
+        {/if}
 
         <div class="flex-1"></div>
 
         <button
-          on:click={handleCancel}
+          on:click={handleDrop}
           disabled={sending}
-          class="text-sm px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
+          class="text-sm px-3 py-2 text-gray-500 dark:text-gray-400 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
+          title="Zahodit koncept (zůstane v historii)"
         >
-          Zrušit
+          Zahodit
         </button>
         <button
           on:click={handleSend}
@@ -632,11 +1102,11 @@
     </div>
   </div>
 
-  <!-- Attachment preview overlay (inside dialogEl so it's inside the portal) -->
+  <!-- Attachment preview overlay -->
   {#if previewState}
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
-      class="absolute inset-0 z-10 flex items-center justify-center bg-black/80"
+      class="fixed inset-0 z-[55] flex items-center justify-center bg-black/80 pointer-events-auto"
       on:click|self={closePreview}
       on:keydown={(e) => e.key === 'Escape' && closePreview()}
     >
@@ -677,7 +1147,7 @@
     </div>
   {/if}
 
-  <!-- Success badge — appears in top-right corner where animation lands -->
+  <!-- Success badge -->
   {#if showSuccessBadge}
     <div class="fixed top-4 right-4 z-[60] flex items-center gap-2.5 bg-green-500 text-white text-sm font-medium px-4 py-3 rounded-xl shadow-xl badge-pop-in">
       <svg class="size-5 shrink-0" viewBox="0 0 20 20" fill="currentColor">
@@ -689,7 +1159,6 @@
 </div>
 
 <style>
-  /* Opening pop — spring scale up from slightly smaller */
   .dialog-pop-in {
     animation: dialog-pop-in 0.38s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   }
@@ -699,28 +1168,17 @@
     100% { transform: scale(1);    opacity: 1; }
   }
 
-  /* Send animation — flies to top-right corner while shrinking */
   .dialog-send-out {
-    animation: dialog-send-out 0.42s cubic-bezier(0.4, 0, 0.8, 0.6) forwards;
+    animation: dialog-send-out 0.4s cubic-bezier(0.4, 0, 0.8, 0.6) forwards;
     pointer-events: none;
+    transform-origin: top right;
   }
 
   @keyframes dialog-send-out {
-    0%   { transform: translate(0, 0) scale(1);                      opacity: 1; }
-    100% { transform: translate(calc(50vw - 2rem), calc(-48vh + 2rem)) scale(0); opacity: 0; }
+    0%   { transform: translateY(0) scale(1);     opacity: 1; }
+    100% { transform: translateY(-28px) scale(0.85); opacity: 0; }
   }
 
-  /* Backdrop fades out */
-  .backdrop-fade-out {
-    animation: backdrop-fade-out 0.5s ease-in forwards;
-  }
-
-  @keyframes backdrop-fade-out {
-    0%   { background-color: rgb(0 0 0 / 0.6); }
-    100% { background-color: rgb(0 0 0 / 0); }
-  }
-
-  /* Success badge pops in */
   .badge-pop-in {
     animation: badge-pop-in 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   }
