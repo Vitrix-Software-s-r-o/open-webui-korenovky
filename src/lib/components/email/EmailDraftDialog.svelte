@@ -5,6 +5,7 @@
   import DOMPurify from 'dompurify';
   import EmailBodyEditor from './EmailBodyEditor.svelte';
   import DraftVersionNav from './DraftVersionNav.svelte';
+  import PDFViewer from '$lib/components/common/PDFViewer.svelte';
   import { uploadFile } from '$lib/apis/files';
   import { emailDraftWindow, setDraftWindow, chatAttachedFiles } from '$lib/stores/email';
   import type { DraftAttachment, DraftVersion, DraftStatus } from '$lib/stores/email';
@@ -399,8 +400,10 @@
       if (att.type === 'dropbox' && att.ref) {
         const r = await fetch(`/api/dropbox-file?path=${encodeURIComponent(att.ref)}`);
         if (r.ok) blob = await r.blob();
-      } else if (att.type === 'office_file' && att.download_url) {
-        const r = await fetch(att.download_url);
+      } else if (att.type === 'office_file' && (att.download_url || att.ref)) {
+        // The /files/{token} URL is normally in download_url, but tolerate it
+        // landing in ref (an LLM occasionally fills the wrong field).
+        const r = await fetch(att.download_url || att.ref);
         if (r.ok) blob = await r.blob();
       } else if (att.type === 'upload' && att.upload_index !== undefined) {
         blob = uploadedFiles[att.upload_index] ?? null;
@@ -449,39 +452,100 @@
     }
   }
 
+  // Fetch an attachment's bytes from whatever source it has, as a File. The
+  // office_file URL is normally in download_url but is tolerated in ref (an
+  // LLM occasionally fills the wrong field). Returns null if it can't be read.
+  async function resolveAttachmentFile(att: DraftAttachment): Promise<File | null> {
+    try {
+      if (att.type === 'upload' && att.upload_index !== undefined) {
+        return uploadedFiles[att.upload_index] ?? null;
+      }
+      if (att.type === 'owui_file' && att.file_id) {
+        return owuiBlobs[att.file_id] ?? (await fetchOwuiBlob(att.file_id));
+      }
+      if (att.type === 'office_file') {
+        const u = att.download_url || att.ref;
+        if (u) {
+          const r = await fetch(u);
+          if (r.ok)
+            return new File([await r.blob()], att.filename, {
+              type: r.headers.get('content-type') || ''
+            });
+        }
+      }
+      if (att.type === 'dropbox' && att.ref) {
+        const r = await fetch(`/api/dropbox-file?path=${encodeURIComponent(att.ref)}`);
+        if (r.ok) return new File([await r.blob()], att.filename);
+      }
+    } catch {
+      /* fall through to null */
+    }
+    return null;
+  }
+
+  function downloadBlobUrl(url: string, filename: string) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  // MIME type by extension for previewable files. The bytes can arrive with a
+  // generic/wrong content-type (e.g. application/octet-stream from OWUI's
+  // /content), which makes a blob <iframe>/<img> fail to render inline and the
+  // browser DOWNLOAD it instead — so we re-stamp the blob with the right type.
+  function previewMime(ext: string): string {
+    const m: Record<string, string> = {
+      pdf: 'application/pdf',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      gif: 'image/gif',
+      webp: 'image/webp',
+      svg: 'image/svg+xml'
+    };
+    return m[ext] ?? '';
+  }
+
+  // Click an attachment chip: images + PDFs open an in-browser preview (with a
+  // download button — download only on request); every other format downloads
+  // right away with no dialog. Always works off a fetched blob so a /files/
+  // "attachment"-disposition URL still previews.
   async function handleAttachmentClick(att: DraftAttachment) {
-    if (att.type === 'dropbox') {
-      if (att.open_url) window.open(att.open_url, '_blank', 'noopener,noreferrer');
-      else toast.error('Soubor z Dropboxu nemá odkaz pro otevření');
-      return;
-    }
-
     const ext = getExt(att.filename);
-    if (att.type === 'office_file' && att.download_url && !isPreviewableExt(ext)) {
-      window.open(att.download_url, '_blank', 'noopener,noreferrer');
+    const previewable = isPreviewableExt(ext);
+
+    const file = await resolveAttachmentFile(att);
+    if (!file) {
+      // Couldn't fetch bytes — fall back to opening any URL we have.
+      const u =
+        (att.type === 'dropbox' ? att.open_url : '') ||
+        att.download_url ||
+        (att.type === 'office_file' ? att.ref : '') ||
+        '';
+      if (u) window.open(u, '_blank', 'noopener,noreferrer');
+      else toast.error('Soubor se nepodařilo otevřít.');
       return;
     }
 
+    if (!previewable) {
+      // Not previewable in the browser → download immediately, no dialog.
+      const url = URL.createObjectURL(file);
+      downloadBlobUrl(url, att.filename);
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      return;
+    }
+
+    // Previewable → show in the dialog. Re-stamp the blob with the correct MIME
+    // so it renders inline (never auto-downloads); the dialog's button is the
+    // only way to download.
+    const mime = previewMime(ext);
+    const blob = mime ? new Blob([file], { type: mime }) : file;
+    const url = URL.createObjectURL(blob);
     const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext);
     const isPdf = ext === 'pdf';
-    let url = '';
-    if (att.type === 'upload' && att.upload_index !== undefined) {
-      const file = uploadedFiles[att.upload_index];
-      if (file) url = URL.createObjectURL(file);
-    } else if (att.type === 'owui_file' && att.file_id) {
-      if (!isPreviewableExt(ext)) {
-        const f = await fetchOwuiBlob(att.file_id);
-        if (f) {
-          const u = URL.createObjectURL(f);
-          window.open(u, '_blank', 'noopener,noreferrer');
-        }
-        return;
-      }
-      const f = owuiBlobs[att.file_id] ?? (await fetchOwuiBlob(att.file_id));
-      if (f) url = URL.createObjectURL(f);
-    } else if (att.type === 'office_file' && att.download_url) {
-      url = att.download_url;
-    }
     previewState = { filename: att.filename, url, isImage, isPdf };
   }
 
@@ -1113,11 +1177,24 @@
       <div class="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
         <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
           <span class="text-sm font-medium text-gray-800 dark:text-white truncate">📎 {previewState.filename}</span>
-          <button
-            on:click={closePreview}
-            class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none ml-4 shrink-0"
-            aria-label="Zavřít náhled"
-          >×</button>
+          <div class="flex items-center gap-2 ml-4 shrink-0">
+            {#if previewState.url}
+              <a
+                href={previewState.url}
+                download={previewState.filename}
+                class="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition"
+                title="Stáhnout"
+              >
+                <svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 16.5h12" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Stáhnout
+              </a>
+            {/if}
+            <button
+              on:click={closePreview}
+              class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+              aria-label="Zavřít náhled"
+            >×</button>
+          </div>
         </div>
         <div class="flex-1 overflow-auto p-4 flex items-center justify-center min-h-[300px]">
           {#if !previewState.url}
@@ -1131,7 +1208,10 @@
           {:else if previewState.isImage}
             <img src={previewState.url} alt={previewState.filename} class="max-w-full max-h-[75vh] object-contain rounded" />
           {:else if previewState.isPdf}
-            <iframe src={previewState.url} title={previewState.filename} class="w-full h-[75vh] rounded border-0" />
+            <!-- Render via PDF.js (canvas), not a browser <iframe>, so it always
+                 previews inline — even when the browser is set to "download PDFs
+                 instead of opening them" (which made the iframe auto-download). -->
+            <PDFViewer url={previewState.url} className="w-full h-[75vh]" />
           {:else}
             <div class="text-center text-gray-500 dark:text-gray-400 text-sm space-y-2">
               <div class="text-4xl">📄</div>
