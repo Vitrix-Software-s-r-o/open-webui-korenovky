@@ -21,7 +21,8 @@
   position: fixed;
   bottom: 1rem;
   right: 1rem;
-  z-index: 9999;
+  /* Sits just below the email draft window (z-50) so the window covers it. */
+  z-index: 49;
   padding: 0.4rem 0.8rem;
   background: rgba(0, 0, 0, 0.6);
   -webkit-backdrop-filter: blur(12px);

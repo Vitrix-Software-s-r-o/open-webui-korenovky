@@ -19,6 +19,7 @@
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
 	import ToolCallDisplay from '$lib/components/common/ToolCallDisplay.svelte';
 	import AgentJobBlock from '$lib/components/common/AgentJobBlock.svelte';
+	import DocumentDraftBlock from '$lib/components/common/DocumentDraftBlock.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
 	import ConsecutiveDetailsGroup from './ConsecutiveDetailsGroup.svelte';
@@ -430,6 +431,9 @@
 		{#if token?.attributes?.type === 'agent_job'}
 			<!-- Background-agent live progress (header + sandboxed iframe) -->
 			<AgentJobBlock attributes={token?.attributes} summary={token.summary} />
+		{:else if token?.attributes?.type === 'document_draft'}
+			<!-- Agent produced an editable doc → auto-open the docked editor -->
+			<DocumentDraftBlock attributes={token?.attributes} />
 		{:else if token?.attributes?.type === 'tool_calls'}
 			<!-- Tool calls have dedicated handling with ToolCallDisplay component -->
 			<ToolCallDisplay

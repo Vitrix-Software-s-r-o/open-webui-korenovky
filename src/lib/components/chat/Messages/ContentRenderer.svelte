@@ -14,6 +14,8 @@
 	} from '$lib/stores';
 	import FloatingButtons from '../ContentRenderer/FloatingButtons.svelte';
 	import { createMessagesList } from '$lib/utils';
+	import { extractAllDocDrafts, hasDocDraftMarker } from '$lib/utils/docDraft';
+	import { ingestAiDocumentDraft } from '$lib/stores/email';
 
 	/**
 	 * Extracts all top-level <details>...</details> blocks from content,
@@ -92,6 +94,20 @@
 
 	let contentContainerElement;
 	let floatingButtonsElement;
+
+	// Robust document-draft ingest: scan the FULL raw message content for draft
+	// markers, independent of how the markdown tokenizer splits tool-call blocks
+	// (it can drop the result body of a <details> with a huge/complex arguments
+	// attribute, so the per-tool ToolCallDisplay scan misses it). ingestAiDocumentDraft
+	// dedupes by draft_id + content key, so re-running on content/`done` changes
+	// is a no-op after the first ingest (and never re-pops a closed editor).
+	$: if (done && typeof content === 'string' && hasDocDraftMarker(content)) {
+		for (const p of extractAllDocDrafts(content)) {
+			if (p?.draft && p?.draft_id) {
+				ingestAiDocumentDraft(p.draft_id, p.draft, { open: p.open, replaces: p.replaces });
+			}
+		}
+	}
 
 	let sourceIds = [];
 	$: getSourceIds(sources);

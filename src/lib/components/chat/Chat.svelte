@@ -101,6 +101,15 @@
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
 	import Messages from '$lib/components/chat/Messages.svelte';
 	import Navbar from '$lib/components/chat/Navbar.svelte';
+	import EmailDraftManager from '$lib/components/email/EmailDraftManager.svelte';
+	import DraftChipsBar from '$lib/components/email/DraftChipsBar.svelte';
+	import {
+		emailDrafts,
+		emailDraftWindow,
+		emailDraftReserve,
+		chatAttachedFiles,
+		hydrateDrafts
+	} from '$lib/stores/email';
 	import ChatControls from './ChatControls.svelte';
 	import EventConfirmDialog from '../common/ConfirmDialog.svelte';
 	import DeleteConfirmDialog from '../common/ConfirmDialog.svelte';
@@ -196,6 +205,25 @@
 	// Chat Input
 	let prompt = '';
 	let chatFiles = [];
+
+	// Surface the chat's uploaded files (input + chat-level + per-message) so the
+	// email draft dialog can attach one directly (they're already OWUI file ids).
+	$: chatAttachedFiles.set(
+		(() => {
+			const seen = new Set();
+			const out = [];
+			const add = (fl) => {
+				if (!fl || !fl.id || seen.has(fl.id)) return;
+				if (fl.type && !['file', 'image', 'doc', 'text'].includes(fl.type)) return;
+				seen.add(fl.id);
+				out.push({ id: fl.id, name: fl.name ?? 'soubor', content_type: fl.content_type });
+			};
+			(files ?? []).forEach(add);
+			(chatFiles ?? []).forEach(add);
+			Object.values(history?.messages ?? {}).forEach((m) => (m?.files ?? []).forEach(add));
+			return out;
+		})()
+	);
 	let files = [];
 	let params = {};
 
@@ -1248,6 +1276,7 @@
 			currentId: null
 		};
 
+		hydrateDrafts(null);
 		chatFiles = [];
 		params = {};
 		taskIds = null;
@@ -1381,6 +1410,10 @@
 
 			if (chatContent) {
 				console.log(chatContent);
+
+				// Hydrate per-chat email drafts + window state before the messages
+				// (and their ToolCallDisplay ingest) render, so reloads dedupe correctly.
+				hydrateDrafts(chatContent?.drafts, chatContent?.draftWindow);
 
 				selectedModels =
 					(chatContent?.models ?? undefined) !== undefined
@@ -2832,7 +2865,9 @@
 					history: history,
 					messages: createMessagesList(history, history.currentId),
 					params: params,
-					files: chatFiles
+					files: chatFiles,
+					drafts: $emailDrafts,
+					draftWindow: $emailDraftWindow
 				});
 			}
 		}
@@ -3071,7 +3106,15 @@
 						}}
 					/>
 
-					<div id="chat-pane" class="flex flex-col flex-auto z-10 w-full @container overflow-auto">
+					<EmailDraftManager />
+
+					<div
+						id="chat-pane"
+						class="flex flex-col flex-auto z-10 w-full @container overflow-auto transition-[padding] duration-150 ease-out"
+						style={$emailDraftReserve
+							? `padding-${$emailDraftReserve.side}: ${$emailDraftReserve.px}px`
+							: ''}
+					>
 						{#if ($settings?.landingPageMode === 'chat' && !$selectedFolder) || createMessagesList(history, history.currentId).length > 0}
 							<div
 								class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
@@ -3118,6 +3161,7 @@
 							</div>
 
 							<div class=" pb-2 {dragged ? 'z-0' : 'z-10'}">
+								<DraftChipsBar />
 								<MessageInput
 									bind:this={messageInput}
 									{history}

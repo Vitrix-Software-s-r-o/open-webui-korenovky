@@ -13,6 +13,7 @@
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 
 	import { settings } from '$lib/stores';
+	import { hasDocDraftMarker } from '$lib/utils/docDraft';
 
 	const i18n = getContext('i18n');
 
@@ -33,23 +34,33 @@
 	export let allowEmbeds = true;
 
 	let open = $settings?.expandDetails ?? false;
-	let _autoOpenedForEmailDraft = false;
+	let _autoOpenedForDraft = false;
 
-	function _tokenHasEmailDraftResult(token: any): boolean {
+	// A draft result (email OR document) inside a collapsed group is a problem:
+	// the slot below is gated behind `{#if open}`, so the ToolCallDisplay that
+	// ingests the draft / pops the editor never mounts until the user expands.
+	// Auto-expand the group so that ingest runs on its own — same intent for
+	// `prepare_document_draft` (.docx/.xlsx editor) as for email drafts.
+	function _tokenHasDraftResult(token: any): boolean {
 		if (token?.attributes?.type !== 'tool_calls' || token?.attributes?.done !== 'true') return false;
 		const text = decode((token as any).text ?? token.attributes?.result ?? '').trim();
 		if (!text) return false;
+		// A files-link produce/import/edit result carries an invisible draft
+		// marker (string result, not a JSON dialog) — auto-expand for it too.
+		if (hasDocDraftMarker(text)) return true;
 		try {
 			const parsed = parseJSONString(text);
-			return typeof parsed === 'object' && parsed !== null && (parsed as any).type === 'email_draft_dialog';
+			if (typeof parsed !== 'object' || parsed === null) return false;
+			const t = (parsed as any).type;
+			return t === 'email_draft_dialog' || t === 'document_draft_dialog';
 		} catch {
 			return false;
 		}
 	}
 
-	$: if (!_autoOpenedForEmailDraft && tokens.some(_tokenHasEmailDraftResult)) {
+	$: if (!_autoOpenedForDraft && tokens.some(_tokenHasDraftResult)) {
 		open = true;
-		_autoOpenedForEmailDraft = true;
+		_autoOpenedForDraft = true;
 	}
 
 	function parseJSONString(str: string) {
