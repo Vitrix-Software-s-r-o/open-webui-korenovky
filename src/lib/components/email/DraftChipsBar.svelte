@@ -67,7 +67,7 @@
 							? 'Zahodit dokument a smazat soubor'
 							: 'Zahodit koncept do historie'}
 					>
-						<svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l8 8M14 6l-8 8" stroke-linecap="round"/></svg>
+						<svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M8 6V4.5a1 1 0 011-1h2a1 1 0 011 1V6m1.5 0l-.5 9a1.5 1.5 0 01-1.5 1.4H7a1.5 1.5 0 01-1.5-1.4L5 6M8.5 9v5M11.5 9v5"/></svg>
 					</button>
 				</div>
 			{/each}
