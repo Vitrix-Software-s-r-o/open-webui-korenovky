@@ -464,10 +464,12 @@ export function setDraftStatus(draftId: string, status: DraftStatus) {
 	persistDrafts(true);
 }
 
-/** Drop a document draft: delete the underlying file from storage, close the
- *  editor if open, and remove the chip. Document drafts have no history, so this
- *  forgets the draft outright. Best-effort on the delete — the chip is removed
- *  regardless so a failed/again-deleted file never leaves a dangling chip. */
+/** Drop a document draft: delete the underlying file from storage and close the
+ *  editor. The draft is kept as a `dropped` TOMBSTONE (not removed) so that
+ *  re-ingesting the same marker on a chat reload — the message still contains it
+ *  — doesn't resurrect a chip for the now-deleted file. Document drafts have no
+ *  history, so a `dropped` document is hidden everywhere (see DraftChipsBar).
+ *  Best-effort on the delete. */
 export async function dropDocumentDraft(draftId: string) {
 	const draft = get(emailDrafts).find((d) => d.id === draftId);
 	const filename = draft?.doc?.filename;
@@ -481,7 +483,13 @@ export async function dropDocumentDraft(draftId: string) {
 			console.error('[document-draft drop] delete failed', e);
 		}
 	}
-	emailDrafts.update((list) => list.filter((d) => d.id !== draftId));
+	emailDrafts.update((list) =>
+		list.map((d) =>
+			d.id === draftId
+				? { ...d, status: 'dropped' as DraftStatus, droppedAt: Date.now(), updatedAt: Date.now() }
+				: d
+		)
+	);
 	persistDrafts(true);
 }
 

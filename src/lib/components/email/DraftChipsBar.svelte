@@ -5,8 +5,16 @@
 		draftHistoryOpen,
 		currentVersion,
 		dropDocumentDraft,
+		setDraftStatus,
 		type ChatDraft
 	} from '$lib/stores/email';
+
+	// Drop a chip: a document deletes its file from storage and is forgotten
+	// (no history); an email is moved to history (recoverable, no file).
+	function dropChip(d: ChatDraft) {
+		if (d.kind === 'document') dropDocumentDraft(d.id);
+		else setDraftStatus(d.id, 'dropped');
+	}
 
 	$: active = $emailDrafts.filter((d) => d.status === 'active');
 	// History is an email-only concept; document drafts never archive.
@@ -33,7 +41,7 @@
 				>
 					<button
 						on:click={() => openDraftId.set(d.id)}
-						class="inline-flex items-center gap-1.5 min-w-0 pl-2 {d.kind === 'document' ? 'pr-1' : 'pr-2.5'} py-1 rounded-full"
+						class="inline-flex items-center gap-1.5 min-w-0 pl-2 pr-1 py-1 rounded-full"
 						title={labelOf(d)}
 					>
 						<span class="size-1.5 rounded-full {d.kind === 'document' ? 'bg-emerald-500' : 'bg-blue-500'} shrink-0"></span>
@@ -47,17 +55,20 @@
 							<span class="text-gray-400 dark:text-gray-500 shrink-0">· {currentVersion(d).to.length}</span>
 						{/if}
 					</button>
-					{#if d.kind === 'document'}
-						<!-- Drop: delete the file from storage + close the editor. -->
-						<button
-							on:click|stopPropagation={() => dropDocumentDraft(d.id)}
-							class="shrink-0 mr-1 -ml-0.5 p-0.5 rounded-full text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-gray-200/70 dark:hover:bg-gray-700/70 transition"
-							title="Zahodit dokument (smaže soubor z úložiště)"
-							aria-label="Zahodit dokument a smazat soubor"
-						>
-							<svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l8 8M14 6l-8 8" stroke-linecap="round"/></svg>
-						</button>
-					{/if}
+					<!-- Drop: document → delete file from storage + close editor (no
+					     history); email → move to history (recoverable). -->
+					<button
+						on:click|stopPropagation={() => dropChip(d)}
+						class="shrink-0 mr-1 -ml-0.5 p-0.5 rounded-full text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-gray-200/70 dark:hover:bg-gray-700/70 transition"
+						title={d.kind === 'document'
+							? 'Zahodit dokument (smaže soubor z úložiště)'
+							: 'Zahodit koncept (přesune do historie)'}
+						aria-label={d.kind === 'document'
+							? 'Zahodit dokument a smazat soubor'
+							: 'Zahodit koncept do historie'}
+					>
+						<svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l8 8M14 6l-8 8" stroke-linecap="round"/></svg>
+					</button>
 				</div>
 			{/each}
 
