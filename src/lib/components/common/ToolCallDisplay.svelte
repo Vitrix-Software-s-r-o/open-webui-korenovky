@@ -86,10 +86,12 @@
 	$: isDone = attributes?.done === 'true';
 	$: isExecuting = attributes?.done && attributes?.done !== 'true';
 
-	// True once this component has observed the tool transition executing→done
-	// in THIS session (a LIVE call). On a chat reload the component mounts with
-	// done already 'true', so this stays false — letting us auto-open the editor
-	// only for a fresh prepare_document_draft, never on a replay.
+	// True once this component has observed the tool transition executing→done in
+	// THIS session — an explicit live call. Lets us re-open the editor even when
+	// the document bytes (and thus its sessionStorage key) didn't change, e.g.
+	// the user re-asks "open it" after closing without edits. Only set in the
+	// ungrouped path where we're always mounted; the grouped path falls back to
+	// the first-seen-this-session check below.
 	let sawExecuting = false;
 	$: if (isExecuting) sawExecuting = true;
 
@@ -127,11 +129,27 @@
 		isDone
 	) {
 		_documentDraftIngested = true;
-		// Auto-open only when this was a live call (saw it execute); on a reload
-		// we still ingest the chip but must not pop the editor window.
-		ingestAiDocumentDraft((parsedResult as any).draft_id, (parsedResult as any).draft, {
-			open: sawExecuting
-		});
+		const draft = (parsedResult as any).draft;
+		const draftId = (parsedResult as any).draft_id;
+		// Open the editor the FIRST time this exact document version is seen in
+		// this tab session. Keying off sessionStorage (not an executing→done
+		// observation) is robust to WHEN we mount: a collapsed tool-call group
+		// only mounts us after `done`, so the old `sawExecuting` flag was always
+		// false there and the editor never popped (the "had to expand the MCP
+		// call" bug). A chat reload re-ingests the chip without resurrecting the
+		// window; a new revision (new key) pops again. Mirrors DocumentDraftBlock.
+		const verKey =
+			'docdraft-opened:' + (draft?.editor_config?.document?.key ?? draftId);
+		let firstSeen = false;
+		try {
+			firstSeen = sessionStorage.getItem(verKey) === null;
+			if (firstSeen) sessionStorage.setItem(verKey, '1');
+		} catch {
+			firstSeen = true; // sessionStorage unavailable → treat as live
+		}
+		// Open on first sight of this version OR on an explicit live re-trigger
+		// (sawExecuting) — but never on a plain reload (both false).
+		ingestAiDocumentDraft(draftId, draft, { open: firstSeen || sawExecuting });
 	}
 </script>
 
