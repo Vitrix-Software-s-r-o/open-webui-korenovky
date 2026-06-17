@@ -8,9 +8,11 @@
 	} from '$lib/stores/email';
 
 	$: active = $emailDrafts.filter((d) => d.status === 'active');
-	$: archived = $emailDrafts.filter((d) => d.status !== 'active');
+	// History is an email-only concept; document drafts never archive.
+	$: archived = $emailDrafts.filter((d) => d.status !== 'active' && d.kind !== 'document');
 
-	function subjectOf(d: ChatDraft): string {
+	function labelOf(d: ChatDraft): string {
+		if (d.kind === 'document') return d.doc?.title?.trim() || 'Dokument';
 		const s = currentVersion(d)?.subject?.trim();
 		return s && s.length ? s : 'Bez předmětu';
 	}
@@ -28,12 +30,16 @@
 						{$openDraftId === d.id
 						? 'border-blue-500 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-200'
 						: 'border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800'}"
-					title={subjectOf(d)}
+					title={labelOf(d)}
 				>
-					<span class="size-1.5 rounded-full bg-blue-500 shrink-0"></span>
-					<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5" /><path d="M3 5.5l7 5 7-5" /></svg>
-					<span class="truncate">{subjectOf(d)}</span>
-					{#if currentVersion(d)?.to?.length}
+					<span class="size-1.5 rounded-full {d.kind === 'document' ? 'bg-emerald-500' : 'bg-blue-500'} shrink-0"></span>
+					{#if d.kind === 'document'}
+						<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 2.5h6l4 4V17a.5.5 0 01-.5.5h-9A.5.5 0 015 17V2.5z"/><path d="M11 2.5V6.5h4"/></svg>
+					{:else}
+						<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5" /><path d="M3 5.5l7 5 7-5" /></svg>
+					{/if}
+					<span class="truncate">{labelOf(d)}</span>
+					{#if d.kind !== 'document' && currentVersion(d)?.to?.length}
 						<span class="text-gray-400 dark:text-gray-500 shrink-0">· {currentVersion(d).to.length}</span>
 					{/if}
 				</button>

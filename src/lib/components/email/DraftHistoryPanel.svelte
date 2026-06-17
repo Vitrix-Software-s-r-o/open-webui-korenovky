@@ -18,7 +18,7 @@
 	});
 
 	$: archived = $emailDrafts
-		.filter((d) => d.status !== 'active')
+		.filter((d) => d.status !== 'active' && d.kind !== 'document')
 		.slice()
 		.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 

@@ -38,8 +38,21 @@ export type DraftVersion = {
 
 export type DraftStatus = 'active' | 'sent' | 'dropped';
 
+// A document draft shares the draft bar + floating window with email drafts, but
+// its body is an OnlyOffice editor (not the email form). `kind: 'document'`
+// discriminates; `doc` carries the signed editor config.
+export type DocumentDraftData = {
+	filename: string;
+	title: string;
+	documentServerUrl: string; // browser-facing OnlyOffice DS base url
+	editorConfig: any; // signed OnlyOffice DocEditor config (incl. document.key)
+	key?: string; // editorConfig.document.key — dedupe re-ingest on reload
+};
+
 export type ChatDraft = {
 	id: string;
+	kind?: 'email' | 'document'; // undefined == 'email' (back-compat)
+	doc?: DocumentDraftData; // present when kind === 'document'
 	status: DraftStatus;
 	mailbox_id: string;
 	currentVersion: number;
@@ -281,9 +294,10 @@ export function ingestAiDraft(draftId: string, payload: any) {
 	emailDrafts.update((list) => {
 		const idx = list.findIndex((d) => d.id === draftId);
 		if (idx === -1) {
-			// Enforce the active-draft cap: auto-drop the oldest active draft.
+			// Enforce the active-draft cap: auto-drop the oldest active EMAIL draft
+			// (document drafts are capped independently in ingestAiDocumentDraft).
 			let base = list;
-			const active = list.filter((d) => d.status === 'active');
+			const active = list.filter((d) => d.status === 'active' && (d.kind ?? 'email') === 'email');
 			if (active.length >= MAX_ACTIVE_DRAFTS) {
 				const oldest = active.reduce((a, b) => (a.updatedAt <= b.updatedAt ? a : b));
 				base = list.map((d) =>
@@ -325,6 +339,74 @@ export function ingestAiDraft(draftId: string, payload: any) {
 		openDraftId.set(draftId);
 		persistDrafts();
 	}
+}
+
+/** Ingest an AI-emitted `document_draft_dialog` payload as a `kind:'document'`
+ *  draft in the same store/bar/window as email drafts. Creates the draft + chip
+ *  if new (or refreshes its editor config when the document key changed).
+ *
+ *  `opts.open` controls whether the editor window pops:
+ *   - `true`  → always open (a LIVE tool result / agent emit — an explicit
+ *               "open it" intent, even if the bytes/key didn't change, which is
+ *               exactly the re-open-an-unchanged-doc case that used to no-op).
+ *   - `false` → never open (a chat RELOAD replaying a historic tool call — must
+ *               not resurrect the editor window).
+ *   - omitted → legacy behaviour: open only when something changed.
+ *  Document drafts are capped independently of email drafts. */
+export function ingestAiDocumentDraft(
+	draftId: string,
+	payload: any,
+	opts?: { open?: boolean }
+) {
+	if (!payload?.editor_config) return;
+	const doc: DocumentDraftData = {
+		filename: payload.filename ?? '',
+		title: payload.title ?? payload.filename ?? 'Dokument',
+		documentServerUrl: payload.document_server_url ?? '/onlyoffice/',
+		editorConfig: payload.editor_config,
+		key: payload.editor_config?.document?.key
+	};
+	let changed = true;
+	emailDrafts.update((list) => {
+		const idx = list.findIndex((d) => d.id === draftId);
+		if (idx === -1) {
+			// Cap active document drafts: drop the oldest (removed outright — document
+			// drafts have no send/history lifecycle, so dropping = forgetting).
+			let base = list;
+			const activeDocs = list.filter((d) => d.kind === 'document' && d.status === 'active');
+			if (activeDocs.length >= MAX_ACTIVE_DRAFTS) {
+				const oldest = activeDocs.reduce((a, b) => (a.updatedAt <= b.updatedAt ? a : b));
+				base = list.filter((d) => d.id !== oldest.id);
+			}
+			const draft: ChatDraft = {
+				id: draftId,
+				kind: 'document',
+				doc,
+				status: 'active',
+				mailbox_id: '',
+				currentVersion: 0,
+				versions: [],
+				seenTokens: [],
+				createdAt: Date.now(),
+				updatedAt: Date.now()
+			};
+			return [...base, draft];
+		}
+		// Existing draft: only refresh + re-open when the content key changed.
+		const prev = list[idx];
+		if (prev.doc?.key && doc.key && prev.doc.key === doc.key) {
+			changed = false;
+			return list;
+		}
+		const next = [...list];
+		next[idx] = { ...prev, kind: 'document', status: 'active', doc, updatedAt: Date.now() };
+		return next;
+	});
+	if (changed) persistDrafts();
+	// Open on an explicit live intent (opts.open === true) even when nothing
+	// changed; never on a reload (false); fall back to "changed" otherwise.
+	const shouldOpen = opts?.open ?? changed;
+	if (shouldOpen) openDraftId.set(draftId);
 }
 
 /** Patch the current version in place (manual edits — does not create a new

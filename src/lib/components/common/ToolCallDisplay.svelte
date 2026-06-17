@@ -16,7 +16,7 @@
 	import CheckCircle from '../icons/CheckCircle.svelte';
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
-	import { ingestAiDraft, openDraftId } from '$lib/stores/email';
+	import { ingestAiDraft, ingestAiDocumentDraft, openDraftId } from '$lib/stores/email';
 	import { settings } from '$lib/stores';
 
 	export let id: string = '';
@@ -86,6 +86,13 @@
 	$: isDone = attributes?.done === 'true';
 	$: isExecuting = attributes?.done && attributes?.done !== 'true';
 
+	// True once this component has observed the tool transition executing→done
+	// in THIS session (a LIVE call). On a chat reload the component mounts with
+	// done already 'true', so this stays false — letting us auto-open the editor
+	// only for a fresh prepare_document_draft, never on a replay.
+	let sawExecuting = false;
+	$: if (isExecuting) sawExecuting = true;
+
 	$: parsedArgs = parseArguments(args);
 	$: parsedResult = parseJSONString(result);
 
@@ -104,6 +111,27 @@
 	) {
 		_emailDraftIngested = true;
 		ingestAiDraft((parsedResult as any).draft_id, (parsedResult as any).draft);
+	}
+
+	let _documentDraftIngested = false;
+
+	// Same pattern for a `document_draft_dialog` result: hand the agent-produced
+	// .docx/.xlsx to the shared draft store as a `kind:'document'` draft, which
+	// opens it in the same draft bar + floating window as email drafts
+	// (EmailDraftManager renders the editor dialog, not here).
+	$: if (
+		!_documentDraftIngested &&
+		parsedResult &&
+		typeof parsedResult === 'object' &&
+		(parsedResult as any).type === 'document_draft_dialog' &&
+		isDone
+	) {
+		_documentDraftIngested = true;
+		// Auto-open only when this was a live call (saw it execute); on a reload
+		// we still ingest the chip but must not pop the editor window.
+		ingestAiDocumentDraft((parsedResult as any).draft_id, (parsedResult as any).draft, {
+			open: sawExecuting
+		});
 	}
 </script>
 

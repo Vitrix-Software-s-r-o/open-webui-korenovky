@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import DraftHistoryPanel from './DraftHistoryPanel.svelte';
 	import EmailDraftDialog from './EmailDraftDialog.svelte';
+	import DocumentDraftDialog from './DocumentDraftDialog.svelte';
 	import {
 		emailDrafts,
 		openDraftId,
@@ -11,6 +12,7 @@
 		revertDraftTo,
 		setDraftStatus,
 		ingestAiDraft,
+		ingestAiDocumentDraft,
 		viewportW,
 		pruneOldEmailAttachmentFiles
 	} from '$lib/stores/email';
@@ -23,6 +25,8 @@
 		// user to confirm and the backend, so this is benign to leave exposed.
 		(window as any).__seedEmailDraft = (draftId: string, payload: any) =>
 			ingestAiDraft(draftId, payload);
+		(window as any).__seedDocumentDraft = (draftId: string, payload: any) =>
+			ingestAiDocumentDraft(draftId, payload);
 
 		// Keep the shared viewport width current (drives the chat-side reservation).
 		const onResize = () => viewportW.set(window.innerWidth);
@@ -39,19 +43,23 @@
 
 {#if openDraft}
 	{#key openDraft.id}
-		<EmailDraftDialog
-			draftId={openDraft.id}
-			mailboxId={openDraft.mailbox_id}
-			version={currentVersion(openDraft)}
-			status={openDraft.status}
-			versionIndex={openDraft.currentVersion}
-			versionCount={openDraft.versions.length}
-			on:edit={(e) => patchCurrentVersion(openDraft.id, e.detail)}
-			on:revert={(e) => revertDraftTo(openDraft.id, e.detail.index)}
-			on:sent={() => setDraftStatus(openDraft.id, 'sent')}
-			on:drop={() => setDraftStatus(openDraft.id, 'dropped')}
-			on:close={() => openDraftId.set(null)}
-		/>
+		{#if openDraft.kind === 'document'}
+			<DocumentDraftDialog draft={openDraft} on:close={() => openDraftId.set(null)} />
+		{:else}
+			<EmailDraftDialog
+				draftId={openDraft.id}
+				mailboxId={openDraft.mailbox_id}
+				version={currentVersion(openDraft)}
+				status={openDraft.status}
+				versionIndex={openDraft.currentVersion}
+				versionCount={openDraft.versions.length}
+				on:edit={(e) => patchCurrentVersion(openDraft.id, e.detail)}
+				on:revert={(e) => revertDraftTo(openDraft.id, e.detail.index)}
+				on:sent={() => setDraftStatus(openDraft.id, 'sent')}
+				on:drop={() => setDraftStatus(openDraft.id, 'dropped')}
+				on:close={() => openDraftId.set(null)}
+			/>
+		{/if}
 	{/key}
 {/if}
 
