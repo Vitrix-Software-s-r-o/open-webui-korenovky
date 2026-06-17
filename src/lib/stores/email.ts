@@ -401,6 +401,13 @@ export function ingestAiDocumentDraft(
 			return [...base, draft];
 		}
 		const prev = base[idx];
+		// The user dropped this draft (deleted the file): never let a marker
+		// resurrect it. A message keeps a marker per edit — several keys for the
+		// same file — so without this guard a key-mismatch reactivates the chip
+		// on every reload. Stays dropped for this draft id (= this filename).
+		if (prev.status === 'dropped') {
+			return base;
+		}
 		if (prev.doc?.key && doc.key && prev.doc.key === doc.key) {
 			return base; // same content version — nothing to refresh
 		}

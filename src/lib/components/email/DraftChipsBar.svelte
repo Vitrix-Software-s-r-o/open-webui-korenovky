@@ -8,6 +8,7 @@
 		setDraftStatus,
 		type ChatDraft
 	} from '$lib/stores/email';
+	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
 
 	// Drop a chip: a document deletes its file from storage and is forgotten
 	// (no history); an email is moved to history (recoverable, no file).
@@ -67,7 +68,7 @@
 							? 'Zahodit dokument a smazat soubor'
 							: 'Zahodit koncept do historie'}
 					>
-						<svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h12M8 6V4.5a1 1 0 011-1h2a1 1 0 011 1V6m1.5 0l-.5 9a1.5 1.5 0 01-1.5 1.4H7a1.5 1.5 0 01-1.5-1.4L5 6M8.5 9v5M11.5 9v5"/></svg>
+						<GarbageBin className="size-3.5" strokeWidth="1.8" />
 					</button>
 				</div>
 			{/each}

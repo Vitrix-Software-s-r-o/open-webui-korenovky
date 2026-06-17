@@ -23,16 +23,20 @@ const config = {
 				try {
 					return child_process.execSync('git rev-parse HEAD').toString().trim();
 				} catch {
-					// if git is not available, fallback to package.json version
-					// or current timestamp
+					// git is not available in the Docker build. Combine the
+					// package.json version with the BUILD timestamp so every build
+					// has a UNIQUE name — otherwise version.json is static and
+					// SvelteKit's updated-store never fires, so deploys never reach
+					// already-open clients (they keep serving stale JS).
+					let v = 'app';
 					try {
-						return (
+						v =
 							JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8'))
-								?.version || Date.now().toString()
-						);
+								?.version || 'app';
 					} catch {
-						return Date.now().toString();
+						/* keep default */
 					}
+					return `${v}+${Date.now()}`;
 				}
 			})(),
 			pollInterval: 60000
