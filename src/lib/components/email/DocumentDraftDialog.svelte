@@ -34,6 +34,12 @@
 		return draft?.doc?.editorConfig?.document?.key ?? null;
 	}
 
+	// Reactive mirror of the draft's content key. CRUCIAL: the reload guard below
+	// must read `draft` *directly* (here) so Svelte tracks it as a dependency —
+	// reading it only inside docKey() would hide the dependency and the editor
+	// would never reload when the store swaps in a new-version config.
+	$: currentKey = draft?.doc?.editorConfig?.document?.key ?? null;
+
 	// Poll files-link for BOTH the lock state and the current on-disk content
 	// version, so the editor locks during ANY MCP edit and refreshes after —
 	// independent of the model emitting a new draft.
@@ -68,9 +74,10 @@
 	}
 
 	// Re-init the editor when the underlying document version (key) changes
-	// after the initial mount — i.e. the agent rewrote the file while it was
-	// open. Guarded on `editor` so it only fires for genuine post-mount changes.
-	$: if (editor && docKey() && docKey() !== mountedKey) {
+	// after the initial mount — i.e. an MCP edit rewrote the file while it was
+	// open. Depends on `currentKey` (which tracks `draft`) so it actually fires
+	// on a store refresh. Guarded on `editor` so it only fires post-mount.
+	$: if (editor && currentKey && currentKey !== mountedKey) {
 		destroyEditor();
 		mountEditor();
 	}
