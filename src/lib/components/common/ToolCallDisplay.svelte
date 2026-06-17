@@ -17,6 +17,7 @@
 	import Image from './Image.svelte';
 	import FullHeightIframe from './FullHeightIframe.svelte';
 	import { ingestAiDraft, ingestAiDocumentDraft, openDraftId } from '$lib/stores/email';
+	import { extractDocDraft } from '$lib/utils/docDraft';
 	import { settings } from '$lib/stores';
 
 	export let id: string = '';
@@ -86,17 +87,13 @@
 	$: isDone = attributes?.done === 'true';
 	$: isExecuting = attributes?.done && attributes?.done !== 'true';
 
-	// True once this component has observed the tool transition executing→done in
-	// THIS session — an explicit live call. Lets us re-open the editor even when
-	// the document bytes (and thus its sessionStorage key) didn't change, e.g.
-	// the user re-asks "open it" after closing without edits. Only set in the
-	// ungrouped path where we're always mounted; the grouped path falls back to
-	// the first-seen-this-session check below.
-	let sawExecuting = false;
-	$: if (isExecuting) sawExecuting = true;
-
 	$: parsedArgs = parseArguments(args);
-	$: parsedResult = parseJSONString(result);
+	// A files-link tool result may carry an invisible document-draft marker —
+	// pull it out and show only the human text. `parsedResult` is parsed from the
+	// cleaned text so the marker never bloats the displayed JSON either.
+	$: docDraft = extractDocDraft(result);
+	$: displayResult = docDraft.cleaned;
+	$: parsedResult = parseJSONString(displayResult);
 
 	let _emailDraftIngested = false;
 
@@ -117,39 +114,34 @@
 
 	let _documentDraftIngested = false;
 
-	// Same pattern for a `document_draft_dialog` result: hand the agent-produced
-	// .docx/.xlsx to the shared draft store as a `kind:'document'` draft, which
-	// opens it in the same draft bar + floating window as email drafts
-	// (EmailDraftManager renders the editor dialog, not here).
-	$: if (
-		!_documentDraftIngested &&
-		parsedResult &&
-		typeof parsedResult === 'object' &&
-		(parsedResult as any).type === 'document_draft_dialog' &&
-		isDone
-	) {
-		_documentDraftIngested = true;
-		const draft = (parsedResult as any).draft;
-		const draftId = (parsedResult as any).draft_id;
-		// Open the editor the FIRST time this exact document version is seen in
-		// this tab session. Keying off sessionStorage (not an executing→done
-		// observation) is robust to WHEN we mount: a collapsed tool-call group
-		// only mounts us after `done`, so the old `sawExecuting` flag was always
-		// false there and the editor never popped (the "had to expand the MCP
-		// call" bug). A chat reload re-ingests the chip without resurrecting the
-		// window; a new revision (new key) pops again. Mirrors DocumentDraftBlock.
-		const verKey =
-			'docdraft-opened:' + (draft?.editor_config?.document?.key ?? draftId);
-		let firstSeen = false;
-		try {
-			firstSeen = sessionStorage.getItem(verKey) === null;
-			if (firstSeen) sessionStorage.setItem(verKey, '1');
-		} catch {
-			firstSeen = true; // sessionStorage unavailable → treat as live
+	// A document draft reaches us two ways; both feed the shared draft store
+	// (EmailDraftManager renders the editor dialog + chips, not here). Pop/refresh
+	// policy lives in ingestAiDocumentDraft — robust to mount timing and reloads.
+	//  1. `prepare_document_draft` returns the dialog as the whole JSON result —
+	//     an explicit "open it" → force-open.
+	//  2. files-link's produce/import/edit tools (and the office proxy) append an
+	//     invisible marker to their text result → pop if new, refresh if open.
+	$: if (!_documentDraftIngested && isDone) {
+		if (
+			parsedResult &&
+			typeof parsedResult === 'object' &&
+			(parsedResult as any).type === 'document_draft_dialog'
+		) {
+			_documentDraftIngested = true;
+			const r = parsedResult as any;
+			ingestAiDocumentDraft(r.draft_id, r.draft, {
+				open: r.open ?? true,
+				force: true,
+				replaces: r.replaces
+			});
+		} else if (docDraft.payload) {
+			_documentDraftIngested = true;
+			const r = docDraft.payload;
+			ingestAiDocumentDraft(r.draft_id, r.draft, {
+				open: r.open ?? true,
+				replaces: r.replaces
+			});
 		}
-		// Open on first sight of this version OR on an explicit live re-trigger
-		// (sawExecuting) — but never on a plain reload (both false).
-		ingestAiDocumentDraft(draftId, draft, { open: firstSeen || sawExecuting });
 	}
 </script>
 

@@ -33,21 +33,12 @@
 		if (!draft || !draftId) return;
 		title = draft.title ?? draft.filename ?? 'Dokument';
 
-		// Liveness: open the editor only the FIRST time this exact document
-		// version is seen in this tab session — so a fresh agent run pops it,
-		// but a chat reload (which re-mounts the block) only re-ingests the chip
-		// without resurrecting the window. The key changes when the file's bytes
-		// change, so a later revision pops again.
-		const verKey =
-			'docdraft-opened:' + (draft.editor_config?.document?.key ?? draftId);
-		let live = false;
-		try {
-			live = sessionStorage.getItem(verKey) === null;
-			if (live) sessionStorage.setItem(verKey, '1');
-		} catch {
-			live = true; // sessionStorage unavailable → treat as live
-		}
-		ingestAiDocumentDraft(draftId, draft, { open: live });
+		// Pop the editor when this is a NEW draft (a fresh agent run); a chat
+		// reload re-mounts this block but the draft was hydrated from chat storage
+		// first, so the same content key dedupes to a silent no-op (no resurrect).
+		// A later revision (new key) refreshes an open window. Policy lives in the
+		// store — see ingestAiDocumentDraft.
+		ingestAiDocumentDraft(draftId, draft, { open: true, replaces: payload?.replaces });
 		ready = true;
 	});
 </script>

@@ -1,7 +1,12 @@
 <script lang="ts">
 	import { createEventDispatcher, onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
-	import { emailDraftWindow, setDraftWindow, type ChatDraft } from '$lib/stores/email';
+	import {
+		emailDraftWindow,
+		setDraftWindow,
+		ingestAiDocumentDraft,
+		type ChatDraft
+	} from '$lib/stores/email';
 
 	// Shares the email draft's floating-window shell (geometry / drag / resize /
 	// snap / teleport-to-body) but renders an OnlyOffice editor as its body.
@@ -14,27 +19,49 @@
 	let editor: any = null;
 	let loadError = '';
 
-	// True while a background agent run is editing this file — the editor is
-	// shown read-only (overlay) until the run releases the lock, then reloaded
-	// with the agent's result. files-link is polled via the same-origin proxy.
+	// True while an MCP edit (a background agent run OR a Word/Excel tools/call via
+	// the office proxy) is mutating this file — the editor is shown read-only
+	// (overlay) until the lock releases, then reloaded with the fresh content.
+	// files-link is polled via the same-origin proxy.
 	let agentEditing = false;
 	let agentPollTimer: ReturnType<typeof setInterval> | undefined;
-	// Document key currently loaded in OnlyOffice; when the draft's key changes
-	// (e.g. an agent just rewrote the file) we re-init the editor to show it.
+	let refreshing = false;
+	// Document key currently loaded in OnlyOffice; when the on-disk content key
+	// changes (any MCP edit) we fetch a fresh config and re-init to show it.
 	let mountedKey: string | null = null;
 
 	function docKey(): string | null {
 		return draft?.doc?.editorConfig?.document?.key ?? null;
 	}
 
-	async function pollAgentStatus() {
+	// Poll files-link for BOTH the lock state and the current on-disk content
+	// version, so the editor locks during ANY MCP edit and refreshes after —
+	// independent of the model emitting a new draft.
+	async function pollStatus() {
 		const fn = draft?.doc?.filename;
 		if (!fn) return;
 		try {
-			const r = await fetch('/editor/agent-status?filename=' + encodeURIComponent(fn));
+			const r = await fetch('/editor/status?filename=' + encodeURIComponent(fn));
 			if (!r.ok) return;
 			const data = await r.json();
 			agentEditing = !!data?.editing;
+			// Refresh to the latest on-disk bytes when the file changed under us
+			// and nothing is mid-edit. Fetch a fresh signed config and feed it
+			// through the store so the reactive re-init below picks up the new key.
+			if (!agentEditing && data?.key && data.key !== mountedKey && !refreshing) {
+				refreshing = true;
+				try {
+					const dr = await fetch('/editor/draft?filename=' + encodeURIComponent(fn));
+					if (dr.ok) {
+						const payload = await dr.json();
+						if (payload?.draft && payload?.draft_id) {
+							ingestAiDocumentDraft(payload.draft_id, payload.draft, { open: false });
+						}
+					}
+				} finally {
+					refreshing = false;
+				}
+			}
 		} catch {
 			/* transient — keep last state */
 		}
@@ -314,8 +341,8 @@
 		window.addEventListener('keydown', handleGlobalKeydown, true);
 		window.addEventListener('resize', onResize);
 		mountEditor();
-		pollAgentStatus();
-		agentPollTimer = setInterval(pollAgentStatus, 2500);
+		pollStatus();
+		agentPollTimer = setInterval(pollStatus, 2500);
 	});
 
 	onDestroy(() => {

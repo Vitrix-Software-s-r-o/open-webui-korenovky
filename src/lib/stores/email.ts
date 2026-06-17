@@ -341,22 +341,26 @@ export function ingestAiDraft(draftId: string, payload: any) {
 	}
 }
 
-/** Ingest an AI-emitted `document_draft_dialog` payload as a `kind:'document'`
- *  draft in the same store/bar/window as email drafts. Creates the draft + chip
- *  if new (or refreshes its editor config when the document key changed).
+/** Ingest a `document_draft_dialog` payload (from a files-link tool marker,
+ *  `prepare_document_draft`, or a `run_agent` emit) as a `kind:'document'`
+ *  draft in the same store/bar/window as email drafts.
  *
- *  `opts.open` controls whether the editor window pops:
- *   - `true`  → always open (a LIVE tool result / agent emit — an explicit
- *               "open it" intent, even if the bytes/key didn't change, which is
- *               exactly the re-open-an-unchanged-doc case that used to no-op).
- *   - `false` → never open (a chat RELOAD replaying a historic tool call — must
- *               not resurrect the editor window).
- *   - omitted → legacy behaviour: open only when something changed.
- *  Document drafts are capped independently of email drafts. */
+ *  Pop/refresh policy — robust to WHEN this runs (live tool result, marker in a
+ *  collapsed group mounted late, or a chat reload):
+ *   - NEW draft + `open` → create chip and pop the editor.
+ *   - EXISTING draft, content key changed → refresh its config silently; the
+ *     open editor window reloads reactively, a closed one is NOT re-popped.
+ *   - EXISTING draft, same key → no-op (this is exactly the chat-reload replay,
+ *     since drafts are hydrated from chat storage before tool results re-ingest).
+ *   - `force` (explicit "open it" — prepare_document_draft) → pop even if the
+ *     draft already exists / key is unchanged.
+ *  `opts.replaces` drops a superseded draft first (e.g. a working copy from
+ *  `copy_document` replacing the imported template's chip). Document drafts are
+ *  capped independently of email drafts. */
 export function ingestAiDocumentDraft(
 	draftId: string,
 	payload: any,
-	opts?: { open?: boolean }
+	opts?: { open?: boolean; force?: boolean; replaces?: string }
 ) {
 	if (!payload?.editor_config) return;
 	const doc: DocumentDraftData = {
@@ -366,17 +370,21 @@ export function ingestAiDocumentDraft(
 		editorConfig: payload.editor_config,
 		key: payload.editor_config?.document?.key
 	};
-	let changed = true;
+	let isNew = false;
+	let keyChanged = false;
 	emailDrafts.update((list) => {
-		const idx = list.findIndex((d) => d.id === draftId);
+		// Drop a superseded draft (e.g. an imported template replaced by its
+		// working copy) before inserting / refreshing this one.
+		let base = opts?.replaces ? list.filter((d) => d.id !== opts!.replaces) : list;
+		const idx = base.findIndex((d) => d.id === draftId);
 		if (idx === -1) {
+			isNew = true;
 			// Cap active document drafts: drop the oldest (removed outright — document
 			// drafts have no send/history lifecycle, so dropping = forgetting).
-			let base = list;
-			const activeDocs = list.filter((d) => d.kind === 'document' && d.status === 'active');
+			const activeDocs = base.filter((d) => d.kind === 'document' && d.status === 'active');
 			if (activeDocs.length >= MAX_ACTIVE_DRAFTS) {
 				const oldest = activeDocs.reduce((a, b) => (a.updatedAt <= b.updatedAt ? a : b));
-				base = list.filter((d) => d.id !== oldest.id);
+				base = base.filter((d) => d.id !== oldest.id);
 			}
 			const draft: ChatDraft = {
 				id: draftId,
@@ -392,21 +400,17 @@ export function ingestAiDocumentDraft(
 			};
 			return [...base, draft];
 		}
-		// Existing draft: only refresh + re-open when the content key changed.
-		const prev = list[idx];
+		const prev = base[idx];
 		if (prev.doc?.key && doc.key && prev.doc.key === doc.key) {
-			changed = false;
-			return list;
+			return base; // same content version — nothing to refresh
 		}
-		const next = [...list];
+		keyChanged = true;
+		const next = [...base];
 		next[idx] = { ...prev, kind: 'document', status: 'active', doc, updatedAt: Date.now() };
 		return next;
 	});
-	if (changed) persistDrafts();
-	// Open on an explicit live intent (opts.open === true) even when nothing
-	// changed; never on a reload (false); fall back to "changed" otherwise.
-	const shouldOpen = opts?.open ?? changed;
-	if (shouldOpen) openDraftId.set(draftId);
+	if (isNew || keyChanged || opts?.replaces) persistDrafts();
+	if (opts?.open && (isNew || opts?.force)) openDraftId.set(draftId);
 }
 
 /** Patch the current version in place (manual edits — does not create a new

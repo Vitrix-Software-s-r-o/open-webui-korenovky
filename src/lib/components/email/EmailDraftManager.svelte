@@ -26,7 +26,7 @@
 		(window as any).__seedEmailDraft = (draftId: string, payload: any) =>
 			ingestAiDraft(draftId, payload);
 		(window as any).__seedDocumentDraft = (draftId: string, payload: any) =>
-			ingestAiDocumentDraft(draftId, payload);
+			ingestAiDocumentDraft(draftId, payload, { open: true, force: true });
 
 		// Keep the shared viewport width current (drives the chat-side reservation).
 		const onResize = () => viewportW.set(window.innerWidth);

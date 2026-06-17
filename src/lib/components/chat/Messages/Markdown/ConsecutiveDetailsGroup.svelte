@@ -13,6 +13,7 @@
 	import FullHeightIframe from '$lib/components/common/FullHeightIframe.svelte';
 
 	import { settings } from '$lib/stores';
+	import { hasDocDraftMarker } from '$lib/utils/docDraft';
 
 	const i18n = getContext('i18n');
 
@@ -44,6 +45,9 @@
 		if (token?.attributes?.type !== 'tool_calls' || token?.attributes?.done !== 'true') return false;
 		const text = decode((token as any).text ?? token.attributes?.result ?? '').trim();
 		if (!text) return false;
+		// A files-link produce/import/edit result carries an invisible draft
+		// marker (string result, not a JSON dialog) — auto-expand for it too.
+		if (hasDocDraftMarker(text)) return true;
 		try {
 			const parsed = parseJSONString(text);
 			if (typeof parsed !== 'object' || parsed === null) return false;
