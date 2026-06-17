@@ -7,7 +7,12 @@
   import DraftVersionNav from './DraftVersionNav.svelte';
   import PDFViewer from '$lib/components/common/PDFViewer.svelte';
   import { uploadFile } from '$lib/apis/files';
-  import { emailDraftWindow, setDraftWindow, chatAttachedFiles } from '$lib/stores/email';
+  import {
+    emailDraftWindow,
+    setDraftWindow,
+    chatAttachedFiles,
+    materializeOfficeAttachments
+  } from '$lib/stores/email';
   import type { DraftAttachment, DraftVersion, DraftStatus } from '$lib/stores/email';
 
   // --- Props (controlled by EmailDraftManager / the email-drafts store) ---
@@ -426,10 +431,17 @@
   // refs from persisted drafts) into the OWUI store, then persist the normalised
   // list. Guards against the version changing underneath us.
   async function materializeAttachments() {
+    // office_file (and legacy dropbox) refs are imported eagerly by the store at
+    // ingest (materializeOfficeAttachments) — importing them here too would
+    // double-upload. Here we only import the dialog's own in-memory 'upload'
+    // files, which the store can't see. The store's conversion flows back via the
+    // version prop (initFromVersion re-runs), so office_file chips become owui_file.
     const key = versionKey;
     const snapshot = attachments;
-    if (!snapshot.some((a) => a.type !== 'owui_file' || !a.file_id)) return;
-    const out = await Promise.all(snapshot.map(materializeAttachment));
+    if (!snapshot.some((a) => a.type === 'upload')) return;
+    const out = await Promise.all(
+      snapshot.map((a) => (a.type === 'upload' ? materializeAttachment(a) : Promise.resolve(a)))
+    );
     if (versionKey !== key) return;
     attachments = attachments.map((a) => {
       const i = snapshot.indexOf(a);
@@ -517,16 +529,25 @@
     const ext = getExt(att.filename);
     const previewable = isPreviewableExt(ext);
 
+    // If it's still a volatile office_file (e.g. a draft created before the
+    // eager copy, or ingest-time import failed), import it into the durable store
+    // now via the store, then re-read the (re-init'd) attachment — so a one-off
+    // click still gets a stable file while the source is alive.
+    if (att.type === 'office_file') {
+      await materializeOfficeAttachments(draftId);
+      await tick();
+      const refreshed = attachments.find((a) => a.filename === att.filename) ?? att;
+      if (refreshed.type === 'owui_file') att = refreshed;
+    }
+
     const file = await resolveAttachmentFile(att);
     if (!file) {
-      // Couldn't fetch bytes — fall back to opening any URL we have.
-      const u =
-        (att.type === 'dropbox' ? att.open_url : '') ||
-        att.download_url ||
-        (att.type === 'office_file' ? att.ref : '') ||
-        '';
+      // Couldn't fetch bytes. Only ever open a DURABLE/external URL (Dropbox's
+      // open_url) — never the volatile /files/{token}, which 404s with a
+      // "File no longer available" page once the source is dropped/pruned.
+      const u = att.type === 'dropbox' ? att.open_url || att.ref || '' : '';
       if (u) window.open(u, '_blank', 'noopener,noreferrer');
-      else toast.error('Soubor se nepodařilo otevřít.');
+      else toast.error('Soubor už není dostupný — zdroj byl odstraněn. Vytvořte přílohu znovu.');
       return;
     }
 

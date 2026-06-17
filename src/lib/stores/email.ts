@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { chatId, temporaryChatEnabled } from '$lib/stores';
 import { updateChatById } from '$lib/apis/chats';
+import { uploadFile } from '$lib/apis/files';
 
 // --- Types ---------------------------------------------------------------
 
@@ -338,6 +339,10 @@ export function ingestAiDraft(draftId: string, payload: any) {
 	if (changed) {
 		openDraftId.set(draftId);
 		persistDrafts();
+		// Eagerly copy volatile office_file refs into OWUI's durable store NOW —
+		// while the source file still exists — so dropping the document draft (or
+		// a files-link prune) later can't break the email attachment.
+		void materializeOfficeAttachments(draftId);
 	}
 }
 
@@ -418,6 +423,69 @@ export function ingestAiDocumentDraft(
 	});
 	if (isNew || keyChanged || opts?.replaces) persistDrafts();
 	if (opts?.open && (isNew || opts?.force)) openDraftId.set(draftId);
+}
+
+/** Copy an email draft's VOLATILE attachment refs (office_file → a files-link
+ *  /files/{token}; legacy dropbox refs) into Open WebUI's durable file store
+ *  (owui_file, tagged email_attachment). Runs at INGEST time — the moment the
+ *  model attaches — so the copy is made while the source still exists, BEFORE a
+ *  document-draft drop / files-link prune can delete it. Idempotent (owui_file is
+ *  left alone) and best-effort (an unfetchable ref is kept as-is so send/preview
+ *  can still try server-side). The dialog's own materialize remains a safety net. */
+const _materializing = new Set<string>();
+export async function materializeOfficeAttachments(draftId: string) {
+	if (_materializing.has(draftId)) return; // in-flight — don't double-upload
+	const draft = get(emailDrafts).find((d) => d.id === draftId);
+	if (!draft || (draft.kind ?? 'email') !== 'email') return;
+	const ver = currentVersion(draft);
+	const atts = ver?.attachments ?? [];
+	const fetchable = (a: DraftAttachment) =>
+		(a.type === 'office_file' && (a.download_url || a.ref)) || (a.type === 'dropbox' && !!a.ref);
+	if (!atts.some(fetchable)) return;
+	_materializing.add(draftId);
+	try {
+		const token = typeof localStorage !== 'undefined' ? localStorage.token : '';
+		const out = await Promise.all(
+			atts.map(async (a) => {
+				if (!fetchable(a)) return a;
+				try {
+					const url =
+						a.type === 'office_file'
+							? a.download_url || a.ref || ''
+							: '/api/dropbox-file?path=' + encodeURIComponent(a.ref ?? '');
+					const r = await fetch(url);
+					if (!r.ok) return a;
+					const blob = await r.blob();
+					const file = new File([blob], a.filename, {
+						type: blob.type || 'application/octet-stream'
+					});
+					const res = await uploadFile(token, file, { email_attachment: true }, false);
+					const id = (res as any)?.id;
+					return id
+						? ({ type: 'owui_file', filename: a.filename, file_id: id } as DraftAttachment)
+						: a;
+				} catch {
+					return a;
+				}
+			})
+		);
+		if (out.every((o, i) => o === atts[i])) return; // nothing converted
+		emailDrafts.update((list) => {
+			const idx = list.findIndex((d) => d.id === draftId);
+			if (idx === -1) return list;
+			const dr = list[idx];
+			const versions = [...dr.versions];
+			const cur = versions[dr.currentVersion];
+			if (!cur || cur !== ver) return list; // version moved on under us — skip
+			versions[dr.currentVersion] = { ...cur, attachments: out };
+			const next = [...list];
+			next[idx] = { ...dr, versions, updatedAt: Date.now() };
+			return next;
+		});
+		persistDrafts(true);
+	} finally {
+		_materializing.delete(draftId);
+	}
 }
 
 /** Patch the current version in place (manual edits — does not create a new
