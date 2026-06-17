@@ -464,6 +464,27 @@ export function setDraftStatus(draftId: string, status: DraftStatus) {
 	persistDrafts(true);
 }
 
+/** Drop a document draft: delete the underlying file from storage, close the
+ *  editor if open, and remove the chip. Document drafts have no history, so this
+ *  forgets the draft outright. Best-effort on the delete — the chip is removed
+ *  regardless so a failed/again-deleted file never leaves a dangling chip. */
+export async function dropDocumentDraft(draftId: string) {
+	const draft = get(emailDrafts).find((d) => d.id === draftId);
+	const filename = draft?.doc?.filename;
+	if (get(openDraftId) === draftId) openDraftId.set(null); // close the editor first
+	if (filename) {
+		try {
+			await fetch('/editor/delete?filename=' + encodeURIComponent(filename), {
+				method: 'POST'
+			});
+		} catch (e) {
+			console.error('[document-draft drop] delete failed', e);
+		}
+	}
+	emailDrafts.update((list) => list.filter((d) => d.id !== draftId));
+	persistDrafts(true);
+}
+
 export function restoreDraft(draftId: string) {
 	// Honour the active-draft cap when restoring from history.
 	emailDrafts.update((list) => {

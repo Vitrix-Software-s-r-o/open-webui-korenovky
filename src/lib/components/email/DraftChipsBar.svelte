@@ -4,6 +4,7 @@
 		openDraftId,
 		draftHistoryOpen,
 		currentVersion,
+		dropDocumentDraft,
 		type ChatDraft
 	} from '$lib/stores/email';
 
@@ -24,25 +25,40 @@
 	<div class="w-full max-w-6xl mx-auto px-2.5">
 		<div class="flex items-center gap-1.5 flex-wrap pb-1.5">
 			{#each active as d (d.id)}
-				<button
-					on:click={() => openDraftId.set(d.id)}
-					class="inline-flex items-center gap-1.5 max-w-[220px] text-xs rounded-full pl-2 pr-2.5 py-1 border shadow-sm transition
+				<div
+					class="inline-flex items-center max-w-[240px] text-xs rounded-full border shadow-sm transition
 						{$openDraftId === d.id
 						? 'border-blue-500 bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-200'
 						: 'border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800'}"
-					title={labelOf(d)}
 				>
-					<span class="size-1.5 rounded-full {d.kind === 'document' ? 'bg-emerald-500' : 'bg-blue-500'} shrink-0"></span>
+					<button
+						on:click={() => openDraftId.set(d.id)}
+						class="inline-flex items-center gap-1.5 min-w-0 pl-2 {d.kind === 'document' ? 'pr-1' : 'pr-2.5'} py-1 rounded-full"
+						title={labelOf(d)}
+					>
+						<span class="size-1.5 rounded-full {d.kind === 'document' ? 'bg-emerald-500' : 'bg-blue-500'} shrink-0"></span>
+						{#if d.kind === 'document'}
+							<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 2.5h6l4 4V17a.5.5 0 01-.5.5h-9A.5.5 0 015 17V2.5z"/><path d="M11 2.5V6.5h4"/></svg>
+						{:else}
+							<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5" /><path d="M3 5.5l7 5 7-5" /></svg>
+						{/if}
+						<span class="truncate">{labelOf(d)}</span>
+						{#if d.kind !== 'document' && currentVersion(d)?.to?.length}
+							<span class="text-gray-400 dark:text-gray-500 shrink-0">· {currentVersion(d).to.length}</span>
+						{/if}
+					</button>
 					{#if d.kind === 'document'}
-						<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 2.5h6l4 4V17a.5.5 0 01-.5.5h-9A.5.5 0 015 17V2.5z"/><path d="M11 2.5V6.5h4"/></svg>
-					{:else}
-						<svg class="size-3.5 shrink-0 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5" /><path d="M3 5.5l7 5 7-5" /></svg>
+						<!-- Drop: delete the file from storage + close the editor. -->
+						<button
+							on:click|stopPropagation={() => dropDocumentDraft(d.id)}
+							class="shrink-0 mr-1 -ml-0.5 p-0.5 rounded-full text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-gray-200/70 dark:hover:bg-gray-700/70 transition"
+							title="Zahodit dokument (smaže soubor z úložiště)"
+							aria-label="Zahodit dokument a smazat soubor"
+						>
+							<svg class="size-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l8 8M14 6l-8 8" stroke-linecap="round"/></svg>
+						</button>
 					{/if}
-					<span class="truncate">{labelOf(d)}</span>
-					{#if d.kind !== 'document' && currentVersion(d)?.to?.length}
-						<span class="text-gray-400 dark:text-gray-500 shrink-0">· {currentVersion(d).to.length}</span>
-					{/if}
-				</button>
+				</div>
 			{/each}
 
 			{#if archived.length > 0}
