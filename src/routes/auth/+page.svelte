@@ -30,6 +30,7 @@
 	const i18n = getContext('i18n');
 
 	let loaded = false;
+	let loading = false;
 
 	let mode = $config?.features.enable_ldap ? 'ldap' : 'signin';
 
@@ -104,12 +105,18 @@
 	};
 
 	const submitHandler = async () => {
-		if (mode === 'ldap') {
-			await ldapSignInHandler();
-		} else if (mode === 'signin') {
-			await signInHandler();
-		} else {
-			await signUpHandler();
+		loading = true;
+		try {
+			if (mode === 'ldap') {
+				await ldapSignInHandler();
+			} else if (mode === 'signin') {
+				await signInHandler();
+			} else {
+				await signUpHandler();
+			}
+		} finally {
+			// On success setSessionUser navigates away; on failure this re-enables the form.
+			loading = false;
 		}
 	};
 
@@ -373,21 +380,29 @@
 									{#if $config?.features.enable_login_form || $config?.features.enable_ldap || form}
 										{#if mode === 'ldap'}
 											<button
-												class="bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+												class="bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5 flex justify-center items-center gap-2.5 disabled:opacity-60 disabled:cursor-not-allowed"
 												type="submit"
+												disabled={loading}
 											>
 												{$i18n.t('Authenticate')}
+												{#if loading}
+													<Spinner className="size-4" />
+												{/if}
 											</button>
 										{:else}
 											<button
-												class="bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+												class="bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5 flex justify-center items-center gap-2.5 disabled:opacity-60 disabled:cursor-not-allowed"
 												type="submit"
+												disabled={loading}
 											>
 												{mode === 'signin'
 													? $i18n.t('Sign in')
 													: ($config?.onboarding ?? false)
 														? $i18n.t('Create Admin Account')
 														: $i18n.t('Create Account')}
+												{#if loading}
+													<Spinner className="size-4" />
+												{/if}
 											</button>
 
 											{#if $config?.features.enable_signup && !($config?.onboarding ?? false)}
