@@ -10,9 +10,34 @@ import anyio
 from mcp import ClientSession
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.client import streamable_http as _streamable_http
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 import httpx
 from open_webui.env import AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL, AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER
+
+
+# --- Suppress the MCP standalone server->client GET SSE stream ---------------
+# On the `initialized` notification the SDK unconditionally opens a long-lived
+# GET SSE stream (StreamableHTTPTransport.handle_get_stream, spawned by
+# start_get_stream) as a server->client push channel. All our MCP servers run
+# with stateless_http=True and none of our tools emit server-initiated
+# messages, so this stream never carries data.
+#
+# It does, however, run as a long-lived task inside the SDK's anyio TaskGroup.
+# On session teardown that parked task can leave a cancel scope that cannot be
+# finalized, which sends anyio's _deliver_cancellation into a 100%-CPU
+# reschedule loop (pins one core indefinitely, independent of traffic). It also
+# emits periodic "GET stream disconnected, reconnecting" log churn (the SDK
+# retries MAX_RECONNECTION_ATTEMPTS times per session).
+#
+# Replacing handle_get_stream with an async no-op makes start_get_stream spawn a
+# coroutine that returns immediately: no GET stream, no reconnect loop, no
+# long-lived task to orphan. Safe because we never consume server->client push.
+async def _noop_get_stream(self, *args, **kwargs):
+    return
+
+
+_streamable_http.StreamableHTTPTransport.handle_get_stream = _noop_get_stream
 
 
 def _build_httpx_client(headers=None, timeout=None, auth=None, verify=True):
