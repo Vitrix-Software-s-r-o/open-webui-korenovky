@@ -23,6 +23,11 @@ dependencies = [
     "requests==2.33.1",
     "aiohttp==3.13.5", # do not update to 3.13.3 - broken
     "async-timeout==5.0.1",
+    # Pin anyio explicitly (otherwise transitive via fastapi/mcp/httpx).
+    # 4.14.0 shipped a _deliver_cancellation busy-loop that pins a CPU core
+    # at 100% when a cancel scope can't finalize a task on MCP session
+    # teardown; 4.14.1 carries cancellation-adjacent fixes. See diagnosis.
+    "anyio==4.14.1",
     "aiocache==0.12.3",
     "aiofiles==25.1.0",
     "starlette-compress==1.7.0",
